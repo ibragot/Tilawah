@@ -1,0 +1,16 @@
+{
+  "name": "tilawah",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "predev": "sh -c 'lsof -ti tcp:3001 | xargs kill -9 2>/dev/null || true; lsof -ti tcp:5173 | xargs kill -9 2>/dev/null || true; lsof -ti tcp:5174 | xargs kill -9 2>/dev/null || true'",
+    "dev": "concurrently -k \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix backend run start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
