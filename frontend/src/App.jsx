@@ -11,9 +11,13 @@ const DAILY_COINS_STORAGE_KEY = 'tilawah_daily_coins';
 const LIFETIME_COINS_STORAGE_KEY = 'tilawah_lifetime_coins';
 const SHOW_TRANSLATION_STORAGE_KEY = 'tilawah_show_translation';
 const RECITER_ID_STORAGE_KEY = 'tilawah_reciter_id';
+const AUDIO_PLAYBACK_RATE_STORAGE_KEY = 'tilawah_audio_playback_rate';
+const AUDIO_VOLUME_STORAGE_KEY = 'tilawah_audio_volume';
 const READER_THEME_STORAGE_KEY = 'tilawah_reader_theme';
+const USER_GROUP_CODE_STORAGE_KEY = 'userGroupCode';
 const AUDIO_HOST = 'https://verses.quran.foundation';
 const READ_AWARD_DELAY_MS = 1500;
+const GROUP_VOTE_OPTIONS = [5, 10, 20, 40, 80];
 
 const DEFAULT_RECITER_OPTIONS = [
   { id: 7, label: 'Mishary Rashid Al-Afasy' },
@@ -276,6 +280,19 @@ function readStoredDailyGoal() {
   return '10-verses';
 }
 
+function getFirstName(value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  return trimmed.split(/\s+/)[0] || '';
+}
+
+function readStoredGroupCode() {
+  return String(localStorage.getItem(USER_GROUP_CODE_STORAGE_KEY) || '').trim().toUpperCase();
+}
+
 function readStoredDailyCoins() {
   try {
     const raw = localStorage.getItem(DAILY_COINS_STORAGE_KEY);
@@ -476,6 +493,7 @@ export default function App() {
   const voiceMirrorMediaRecorderRef = useRef(null);
   const voiceMirrorMediaStreamRef = useRef(null);
   const voiceMirrorRecordedChunksRef = useRef([]);
+  const voiceMirrorRecordedBlobRef = useRef(null);
   const voiceMirrorShouldMatchRef = useRef(false);
   const voiceMirrorLiveTranscriptRef = useRef('');
   const voiceMirrorScoreAnimationRef = useRef(0);
@@ -484,6 +502,7 @@ export default function App() {
   const voiceMirrorAnalyserRef = useRef(null);
   const voiceMirrorAudioContextRef = useRef(null);
   const voiceMirrorAnimationFrameRef = useRef(0);
+  const audioBarMenuRef = useRef(null);
   const nextAudioPrefetchRef = useRef(null);
   const lastPrefetchSourceVerseIdRef = useRef('');
   const verseRefs = useRef(new Map());
@@ -518,8 +537,15 @@ export default function App() {
   const [lifetimeCoins, setLifetimeCoins] = useState(() => readStoredLifetimeCoins());
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [activePage, setActivePage] = useState('reader');
+  const [profileTab, setProfileTab] = useState('stats');
   const [isFullJournalOpen, setIsFullJournalOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState('surahs');
+  const [groupCode, setGroupCode] = useState(() => readStoredGroupCode());
+  const [joinGroupCode, setJoinGroupCode] = useState(() => readStoredGroupCode());
+  const [groupData, setGroupData] = useState(null);
+  const [groupError, setGroupError] = useState('');
+  const [isGroupLoading, setIsGroupLoading] = useState(false);
+  const [groupLastUpdatedAt, setGroupLastUpdatedAt] = useState('');
   const [pendingBookmarkJump, setPendingBookmarkJump] = useState(null);
   const [isLoadingChapters, setIsLoadingChapters] = useState(true);
   const [isLoadingVerses, setIsLoadingVerses] = useState(false);
@@ -529,6 +555,22 @@ export default function App() {
   const [currentAudio, setCurrentAudio] = useState(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
+  const [audioVolume, setAudioVolume] = useState(() => {
+    const raw = Number.parseFloat(localStorage.getItem(AUDIO_VOLUME_STORAGE_KEY) || '1');
+    if (!Number.isFinite(raw)) {
+      return 1;
+    }
+    return Math.max(0, Math.min(1, raw));
+  });
+  const [isAudioMuted, setIsAudioMuted] = useState(false);
+  const [audioPlaybackRate, setAudioPlaybackRate] = useState(() => {
+    const raw = Number.parseFloat(localStorage.getItem(AUDIO_PLAYBACK_RATE_STORAGE_KEY) || '1');
+    if (!Number.isFinite(raw)) {
+      return 1;
+    }
+    return Math.max(0.5, Math.min(1, raw));
+  });
+  const [isAudioMenuOpen, setIsAudioMenuOpen] = useState(false);
   const [copiedVerseId, setCopiedVerseId] = useState('');
   const [centeredVerseId, setCenteredVerseId] = useState('');
   const [isAudioBarVisible, setIsAudioBarVisible] = useState(false);
@@ -549,6 +591,12 @@ export default function App() {
   const [voiceMirrorWordRows, setVoiceMirrorWordRows] = useState([]);
   const [voiceMirrorCorrectWords, setVoiceMirrorCorrectWords] = useState([]);
   const [voiceMirrorScore, setVoiceMirrorScore] = useState({ matched: 0, total: 0, percent: 0 });
+  const [voiceMirrorDetailedScores, setVoiceMirrorDetailedScores] = useState({
+    pronunciationScore: 0,
+    accuracyScore: 0,
+    fluencyScore: 0,
+    completenessScore: 0,
+  });
   const [isVoiceMirrorReciterPlaying, setIsVoiceMirrorReciterPlaying] = useState(false);
   const [voiceMirrorReciterAudio, setVoiceMirrorReciterAudio] = useState(null);
   const [voiceMirrorReciterProgress, setVoiceMirrorReciterProgress] = useState(0);
@@ -576,6 +624,7 @@ export default function App() {
   });
   const [authSession, setAuthSession] = useState({ checked: false, loggedIn: false, accessToken: '', user: null });
   const [serverStreak, setServerStreak] = useState(null);
+  const [entryMode, setEntryMode] = useState('');
 
   const todayKey = getTodayKey();
   const todaysActions = useMemo(() => {
@@ -588,6 +637,10 @@ export default function App() {
 
   const streakCount = streak.currentStreak || 0;
   const todaysReadCount = Number(streak.activityLog?.[todayKey] || 0);
+  const totalVersesReadAllTime = useMemo(
+    () => Object.values(streak.activityLog || {}).reduce((sum, count) => sum + Number(count || 0), 0),
+    [streak.activityLog]
+  );
   const selectedDailyGoal = DAILY_GOAL_OPTIONS.find((option) => option.id === dailyGoal) || DAILY_GOAL_OPTIONS[1];
   const wirdProgress = Math.min(100, (todaysReadCount / selectedDailyGoal.targetVerses) * 100);
   const isWirdComplete = wirdProgress >= 100;
@@ -624,6 +677,35 @@ export default function App() {
 
   function startQuranFoundationLogin() {
     window.location.href = '/api/auth/login';
+  }
+
+  function continueAsGuest() {
+    const today = getTodayKey();
+
+    setActionLog((current) => ({
+      ...current,
+      [today]: {
+        ...(current[today] || {}),
+        read: [],
+        tafsir: [],
+      },
+    }));
+
+    setCenteredVerseId('');
+    setReadingProgress(0);
+    setPendingBookmarkJump(null);
+    setIsDrawerOpen(false);
+    setActivePage('reader');
+    setEntryMode('guest');
+
+    if (chapters.length > 0) {
+      const firstChapter = chapters[0];
+      setSelectedChapter((current) => (current?.id === firstChapter.id ? { ...firstChapter } : firstChapter));
+    }
+
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }
   }
 
   function signOutQuranFoundation() {
@@ -711,6 +793,123 @@ export default function App() {
     }
   }
 
+  function resolveGoalIdFromPayload(payload) {
+    const record =
+      payload?.goal ||
+      payload?.data?.goal ||
+      (Array.isArray(payload?.goals) ? payload.goals[0] : null) ||
+      (Array.isArray(payload?.data) ? payload.data[0] : null) ||
+      payload?.data ||
+      payload;
+
+    if (!record || typeof record !== 'object') {
+      return '';
+    }
+
+    const directIdCandidates = [
+      record?.id,
+      record?.goal_id,
+      record?.daily_goal_id,
+      record?.goalId,
+      record?.dailyGoalId,
+      record?.slug,
+      record?.name,
+      record?.label,
+    ]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+
+    const directGoal = DAILY_GOAL_OPTIONS.find((option) =>
+      directIdCandidates.some((candidate) => candidate === option.id || candidate === option.label)
+    );
+    if (directGoal) {
+      return directGoal.id;
+    }
+
+    const targetCandidates = [record?.target_verses, record?.targetVerses, record?.verses, record?.daily_target]
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0);
+
+    const targetGoal = DAILY_GOAL_OPTIONS.find((option) => targetCandidates.some((target) => target === option.targetVerses));
+    return targetGoal?.id || '';
+  }
+
+  async function syncGoalFromServer() {
+    if (!authSessionRef.current.loggedIn) {
+      setDailyGoal(readStoredDailyGoal());
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/user/goals');
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json();
+      const resolvedGoalId = resolveGoalIdFromPayload(payload);
+      if (resolvedGoalId) {
+        setDailyGoal(resolvedGoalId);
+      }
+    } catch {
+      // Keep local fallback when server goal sync fails.
+    }
+  }
+
+  async function postGoalToServer(goalId) {
+    if (!authSessionRef.current.loggedIn) {
+      return;
+    }
+
+    const selectedGoal = DAILY_GOAL_OPTIONS.find((option) => option.id === goalId);
+    if (!selectedGoal) {
+      return;
+    }
+
+    try {
+      await fetch('/api/user/goals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          goal_id: selectedGoal.id,
+          daily_goal_id: selectedGoal.id,
+          target_verses: selectedGoal.targetVerses,
+          label: selectedGoal.label,
+        }),
+      });
+    } catch {
+      // Do not block local goal updates if server sync fails.
+    }
+  }
+
+  function handleDailyGoalSelection(goalId) {
+    setDailyGoal(goalId);
+    postGoalToServer(goalId);
+  }
+
+  async function postStreakToServer(nextStreakData) {
+    if (!authSessionRef.current.loggedIn || !nextStreakData) {
+      return;
+    }
+
+    try {
+      await fetch('/api/user/streaks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_streak: Number(nextStreakData.currentStreak || 0),
+          longest_streak: Number(nextStreakData.longestStreak || 0),
+          last_read_date: String(nextStreakData.lastReadDate || ''),
+          activity_count_today: Number(nextStreakData.activityLog?.[getTodayKey()] || 0),
+        }),
+      });
+
+      setServerStreak(Number(nextStreakData.currentStreak || 0));
+    } catch {
+      // Keep local streak updates if server sync fails.
+    }
+  }
+
   async function postBookmarkToServer(verse, isBookmarked) {
     if (!authSessionRef.current.loggedIn) {
       return;
@@ -761,6 +960,208 @@ export default function App() {
       // Do not block local progress updates if sync fails.
     }
   }
+
+  function getCurrentUserIdentity() {
+    const fallbackName = String(profileName || 'Member').trim() || 'Member';
+    const sessionName = String(authSessionRef.current.user?.name || authSessionRef.current.user?.email || '').trim();
+    const userId =
+      String(authSessionRef.current.user?.sub || authSessionRef.current.user?.email || sessionName || '').trim();
+
+    return {
+      userId,
+      name: sessionName || fallbackName,
+    };
+  }
+
+  function persistGroupCode(nextCode) {
+    const normalizedCode = String(nextCode || '').trim().toUpperCase();
+    setGroupCode(normalizedCode);
+    setJoinGroupCode(normalizedCode);
+    if (normalizedCode) {
+      localStorage.setItem(USER_GROUP_CODE_STORAGE_KEY, normalizedCode);
+      return;
+    }
+
+    localStorage.removeItem(USER_GROUP_CODE_STORAGE_KEY);
+  }
+
+  async function loadGroupByCode(codeToLoad, { silent = false } = {}) {
+    const normalizedCode = String(codeToLoad || '').trim().toUpperCase();
+    if (!normalizedCode) {
+      setGroupData(null);
+      setGroupError('');
+      persistGroupCode('');
+      return null;
+    }
+
+    if (!silent) {
+      setIsGroupLoading(true);
+    }
+
+    try {
+      const response = await fetch(`/api/groups/${encodeURIComponent(normalizedCode)}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not load group');
+      }
+
+      setGroupData(payload || null);
+      setGroupError('');
+      setGroupLastUpdatedAt(new Date().toISOString());
+      persistGroupCode(payload?.code || normalizedCode);
+      return payload || null;
+    } catch (error) {
+      if (!silent) {
+        setGroupData(null);
+        setGroupError(error.message || 'Could not load group');
+      }
+      return null;
+    } finally {
+      if (!silent) {
+        setIsGroupLoading(false);
+      }
+    }
+  }
+
+  async function createGroup() {
+    const identity = getCurrentUserIdentity();
+    if (!identity.userId) {
+      setGroupError('Could not identify current user. Please sign in again.');
+      return;
+    }
+
+    const groupName = window.prompt('Enter a group name');
+    const normalizedName = String(groupName || '').trim();
+    if (!normalizedName) {
+      return;
+    }
+
+    setIsGroupLoading(true);
+    setGroupError('');
+    try {
+      const response = await fetch('/api/groups/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: identity.userId,
+          memberName: identity.name,
+          groupName: normalizedName,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not create group');
+      }
+
+      setGroupData(payload || null);
+      setGroupLastUpdatedAt(new Date().toISOString());
+      persistGroupCode(payload?.code || '');
+      setProfileTab('groups');
+      if (payload?.code) {
+        window.alert(`Share this code with your circle: ${payload.code}`);
+      }
+    } catch (error) {
+      setGroupError(error.message || 'Could not create group');
+    } finally {
+      setIsGroupLoading(false);
+    }
+  }
+
+  async function joinGroup() {
+    const identity = getCurrentUserIdentity();
+    const normalizedCode = String(joinGroupCode || '').trim().toUpperCase();
+    if (!identity.userId) {
+      setGroupError('Could not identify current user. Please sign in again.');
+      return;
+    }
+    if (!normalizedCode || normalizedCode.length !== 6) {
+      setGroupError('Enter a valid 6-character group code.');
+      return;
+    }
+
+    setIsGroupLoading(true);
+    setGroupError('');
+    try {
+      const response = await fetch('/api/groups/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: normalizedCode,
+          userId: identity.userId,
+          name: identity.name,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not join group');
+      }
+
+      setGroupData(payload || null);
+      setGroupLastUpdatedAt(new Date().toISOString());
+      persistGroupCode(payload?.code || normalizedCode);
+      setProfileTab('groups');
+    } catch (error) {
+      setGroupError(error.message || 'Could not join group');
+    } finally {
+      setIsGroupLoading(false);
+    }
+  }
+
+  async function voteOnGroupWird(wirdAmount) {
+    const identity = getCurrentUserIdentity();
+    const codeToVote = String(groupData?.code || groupCode || '').trim().toUpperCase();
+    if (!identity.userId || !codeToVote) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/groups/${encodeURIComponent(codeToVote)}/vote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: identity.userId, wirdAmount }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not save vote');
+      }
+
+      setGroupData(payload || null);
+      setGroupLastUpdatedAt(new Date().toISOString());
+      setGroupError('');
+    } catch (error) {
+      setGroupError(error.message || 'Could not save vote');
+    }
+  }
+
+  async function syncGroupProgress(versesToday, totalVerses) {
+    const identity = getCurrentUserIdentity();
+    const codeToSync = String(groupData?.code || groupCode || '').trim().toUpperCase();
+    if (!authSessionRef.current.loggedIn || !identity.userId || !codeToSync) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/groups/${encodeURIComponent(codeToSync)}/progress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: identity.userId,
+          versesToday,
+          totalVerses,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not sync group progress');
+      }
+
+      setGroupData(payload || null);
+      setGroupLastUpdatedAt(new Date().toISOString());
+    } catch {
+      // Keep reading flow uninterrupted when group sync fails.
+    }
+  }
+
   const heatmapCalendar = useMemo(() => {
     const CELL = 13;
     const GAP = 3;
@@ -905,9 +1306,6 @@ export default function App() {
         ).sort((a, b) => a.id - b.id);
 
         setChapters(fetchedChapters);
-        if (fetchedChapters.length > 0) {
-          setSelectedChapter(fetchedChapters[0]);
-        }
       } catch (err) {
         setError(err.message || 'Unexpected error while loading chapters');
       } finally {
@@ -997,12 +1395,34 @@ export default function App() {
 
     if (!authSession.loggedIn) {
       setServerStreak(null);
+      setDailyGoal(readStoredDailyGoal());
       return;
     }
 
     syncBookmarksFromServer();
     syncStreakFromServer();
+    syncGoalFromServer();
   }, [authSession.loggedIn, authSession.accessToken, authSession.user]);
+
+  useEffect(() => {
+    if (!authSession.loggedIn) {
+      setGroupData(null);
+      setGroupError('');
+      return;
+    }
+
+    if (groupCode) {
+      loadGroupByCode(groupCode, { silent: true });
+    }
+  }, [authSession.loggedIn, groupCode]);
+
+  useEffect(() => {
+    if (!authSession.loggedIn || !groupCode) {
+      return;
+    }
+
+    syncGroupProgress(todaysReadCount, totalVersesReadAllTime);
+  }, [authSession.loggedIn, groupCode, todaysReadCount, totalVersesReadAllTime]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1222,8 +1642,80 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(RECITER_ID_STORAGE_KEY, String(selectedReciterId));
     setAudioByChapter({});
-    closeAudioBar();
+
+    if (!currentAudio?.verseId || !selectedChapter?.id) {
+      return;
+    }
+
+    const nextVerse = verses.find((verse) => String(getVerseId(verse)) === String(currentAudio.verseId));
+    if (!nextVerse) {
+      return;
+    }
+
+    playVerseAudioWithOptions(nextVerse, { forcePlay: true }).catch(() => {
+      closeAudioBar();
+    });
   }, [selectedReciterId]);
+
+  useEffect(() => {
+    if (authSession.checked && authSession.loggedIn && !entryMode) {
+      setEntryMode('signed-in');
+    }
+  }, [authSession.checked, authSession.loggedIn, entryMode]);
+
+  useEffect(() => {
+    if (!entryMode || selectedChapter?.id || !chapters.length) {
+      return;
+    }
+
+    setSelectedChapter(chapters[0]);
+  }, [entryMode, selectedChapter?.id, chapters]);
+
+  useEffect(() => {
+    const audioEl = audioRef.current;
+    if (!audioEl) {
+      return;
+    }
+
+    audioEl.volume = isAudioMuted ? 0 : audioVolume;
+  }, [audioVolume, isAudioMuted, currentAudio?.url]);
+
+  useEffect(() => {
+    localStorage.setItem(AUDIO_VOLUME_STORAGE_KEY, String(audioVolume));
+  }, [audioVolume]);
+
+  useEffect(() => {
+    localStorage.setItem(AUDIO_PLAYBACK_RATE_STORAGE_KEY, String(audioPlaybackRate));
+    const audioEl = audioRef.current;
+    if (audioEl) {
+      audioEl.playbackRate = audioPlaybackRate;
+    }
+  }, [audioPlaybackRate, currentAudio?.url]);
+
+  useEffect(() => {
+    if (!isAudioMenuOpen) {
+      return;
+    }
+
+    function handleOutside(event) {
+      if (!audioBarMenuRef.current?.contains(event.target)) {
+        setIsAudioMenuOpen(false);
+      }
+    }
+
+    function handleEscape(event) {
+      if (event.key === 'Escape') {
+        setIsAudioMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('click', handleOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('click', handleOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isAudioMenuOpen]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -1258,7 +1750,7 @@ export default function App() {
 
   useEffect(() => {
     function updateReadingProgress() {
-      if (activePage !== 'reader' || !verses.length || !surahContentRef.current) {
+      if (!entryMode || activePage !== 'reader' || !verses.length || !surahContentRef.current) {
         setReadingProgress(0);
         return;
       }
@@ -1284,7 +1776,7 @@ export default function App() {
       window.removeEventListener('scroll', updateReadingProgress);
       window.removeEventListener('resize', updateReadingProgress);
     };
-  }, [activePage, verses, selectedChapter]);
+  }, [entryMode, activePage, verses, selectedChapter]);
 
   useEffect(() => {
     return () => {
@@ -1469,6 +1961,10 @@ export default function App() {
       streakRef.current = nextStreakData;
       setStreak(nextStreakData);
       nextStreakCount = updatedCurrentStreak;
+
+      if (updatedCurrentStreak !== Number(currentStreakData.currentStreak || 0)) {
+        postStreakToServer(nextStreakData);
+      }
     }
 
     const nextMultiplier = nextStreakCount >= 7 ? 2 : 1;
@@ -1610,6 +2106,12 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!entryMode || activePage !== 'reader') {
+      activeCenteredVerseIdRef.current = '';
+      clearActiveReadTimer();
+      return;
+    }
+
     activeCenteredVerseIdRef.current = '';
     clearActiveReadTimer();
 
@@ -1631,7 +2133,7 @@ export default function App() {
       window.clearTimeout(initTimer);
       clearActiveReadTimer();
     };
-  }, [verses, actionLog]);
+  }, [entryMode, activePage, verses, actionLog]);
 
   useEffect(() => {
     async function ensureChapterTafsirLoaded() {
@@ -2367,6 +2869,167 @@ export default function App() {
     };
   }
 
+  function normalizeVoiceMirrorReferenceText(text) {
+    return String(text || '')
+      .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
+      .replace(/\u0640/g, '')
+      .replace(/[إأآٱ]/g, 'ا')
+      .replace(/ى/g, 'ي')
+      .replace(/ة/g, 'ه')
+      .replace(/[ؤئ]/g, 'ء')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || '');
+        const base64 = result.split(',')[1] || '';
+        if (!base64) {
+          reject(new Error('Could not convert recording to base64.'));
+          return;
+        }
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error('Could not read recorded audio.'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function getVoiceMirrorRecordedBlob(waitMs = 2500) {
+    const startedAt = Date.now();
+    while (!voiceMirrorRecordedBlobRef.current && Date.now() - startedAt < waitMs) {
+      // Wait briefly for MediaRecorder onstop to populate the blob.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    return voiceMirrorRecordedBlobRef.current;
+  }
+
+  function applyVoiceMirrorFallbackScoring(comparison) {
+    setVoiceMirrorWordRows(comparison.rows);
+    setVoiceMirrorCorrectWords(comparison.correctWords);
+    setVoiceMirrorScore({
+      matched: comparison.matched,
+      total: comparison.total,
+      percent: comparison.percent,
+    });
+    setVoiceMirrorDetailedScores({
+      pronunciationScore: comparison.percent,
+      accuracyScore: comparison.percent,
+      fluencyScore: 0,
+      completenessScore: 0,
+    });
+  }
+
+  async function assessVoiceMirrorPronunciation(referenceText, fallbackComparison, transcribedTextInput = '') {
+    const normalizedReferenceText = normalizeVoiceMirrorReferenceText(referenceText);
+    if (!normalizedReferenceText) {
+      applyVoiceMirrorFallbackScoring(fallbackComparison);
+      return;
+    }
+
+    const recordedBlob = await getVoiceMirrorRecordedBlob();
+    if (!recordedBlob) {
+      applyVoiceMirrorFallbackScoring(fallbackComparison);
+      setVoiceMirrorError('Recorded audio was not available for pronunciation assessment. Showing local scoring.');
+      return;
+    }
+
+    try {
+      const audioBase64 = await blobToBase64(recordedBlob);
+      const response = await fetch('/api/voice/assess', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          audioBase64,
+          referenceText: normalizedReferenceText,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Pronunciation assessment failed.');
+      }
+
+      const pronunciationScore = Math.max(0, Math.min(100, Number(payload?.pronunciationScore || 0)));
+      const accuracyScore = Math.max(0, Math.min(100, Number(payload?.accuracyScore || 0)));
+      const fluencyScore = Math.max(0, Math.min(100, Number(payload?.fluencyScore || 0)));
+      const completenessScore = Math.max(0, Math.min(100, Number(payload?.completenessScore || 0)));
+
+      const azureWords = Array.isArray(payload?.words) ? payload.words : [];
+      const referenceWords = String(referenceText || '')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      const transcriptWords = String(transcribedTextInput || '')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+
+      const rows = referenceWords.map((referenceWord, index) => {
+        const azureWord = azureWords[index] || {};
+        const rowAccuracyScore = Math.max(0, Math.min(100, Number(azureWord?.accuracyScore || 0)));
+        const errorType = String(azureWord?.errorType || 'None').trim() || 'None';
+        const transcriptWord = String(transcriptWords[index] || '').trim();
+        const normalizedReferenceWord = normalizeArabicComparisonWord(referenceWord);
+        const normalizedTranscriptWord = normalizeArabicComparisonWord(transcriptWord);
+        const hasTranscriptMismatch =
+          Boolean(transcriptWord) &&
+          Boolean(normalizedReferenceWord) &&
+          normalizedTranscriptWord !== normalizedReferenceWord;
+
+        const adjustedWordScore = hasTranscriptMismatch
+          ? Math.max(0, rowAccuracyScore - 20)
+          : rowAccuracyScore;
+
+        return {
+          quranWord: referenceWord,
+          userWord: transcriptWord || String(azureWord?.word || '').trim(),
+          matched: errorType === 'None' && adjustedWordScore >= 90,
+          similarityScore: adjustedWordScore / 100,
+          accuracyScore: adjustedWordScore,
+          azureAccuracyScore: rowAccuracyScore,
+          transcriptMismatch: hasTranscriptMismatch,
+          errorType,
+        };
+      });
+
+      const resolvedRows = rows.length > 0 ? rows : fallbackComparison.rows;
+      const penaltyWordCount = resolvedRows.filter((row) => {
+        const score = Number(row?.accuracyScore ?? (row?.similarityScore || 0) * 100);
+        return score < 80;
+      }).length;
+      const adjustedPronunciationScore =
+        pronunciationScore > 85 && penaltyWordCount === 0
+          ? pronunciationScore
+          : Math.max(0, pronunciationScore - penaltyWordCount * 15);
+      const matchedCount = resolvedRows.filter(
+        (row) => String(row.errorType || 'None') === 'None' && Number(row.accuracyScore || 0) >= 90
+      ).length;
+
+      setVoiceMirrorWordRows(resolvedRows);
+      setVoiceMirrorCorrectWords(resolvedRows.map((row) => String(row.quranWord || '').trim()).filter(Boolean));
+      setVoiceMirrorScore({
+        matched: matchedCount,
+        total: resolvedRows.length,
+        percent: Math.round(adjustedPronunciationScore),
+      });
+      setVoiceMirrorDetailedScores({
+        pronunciationScore: adjustedPronunciationScore,
+        accuracyScore,
+        fluencyScore,
+        completenessScore,
+      });
+    } catch (error) {
+      applyVoiceMirrorFallbackScoring(fallbackComparison);
+      setVoiceMirrorError(error.message || 'Pronunciation assessment failed. Showing local scoring.');
+    }
+  }
+
   function stopAndReleaseVoiceMirrorReciterAudio() {
     setVoiceMirrorReciterAudio((current) => {
       if (!current) {
@@ -2510,8 +3173,10 @@ export default function App() {
     setVoiceMirrorWordRows([]);
     setVoiceMirrorCorrectWords([]);
     setVoiceMirrorScore({ matched: 0, total: 0, percent: 0 });
+    setVoiceMirrorDetailedScores({ pronunciationScore: 0, accuracyScore: 0, fluencyScore: 0, completenessScore: 0 });
     setVoiceMirrorUserProgress(0);
     voiceMirrorLiveTranscriptRef.current = '';
+    voiceMirrorRecordedBlobRef.current = null;
     setIsVoiceRecording(false);
   }
 
@@ -2552,13 +3217,7 @@ export default function App() {
 
         setMatchedVerse(localFallback);
         const localComparison = computeVoiceMirrorComparison(transcribedText, localFallback.verseText);
-        setVoiceMirrorWordRows(localComparison.rows);
-        setVoiceMirrorCorrectWords(localComparison.correctWords);
-        setVoiceMirrorScore({
-          matched: localComparison.matched,
-          total: localComparison.total,
-          percent: localComparison.percent,
-        });
+        await assessVoiceMirrorPronunciation(localFallback.verseText, localComparison, transcribedText);
         setVoiceMirrorState('mirror');
         return;
       }
@@ -2576,13 +3235,7 @@ export default function App() {
       setMatchedVerse(match);
 
       const comparison = computeVoiceMirrorComparison(transcribedText, match.verseText);
-      setVoiceMirrorWordRows(comparison.rows);
-      setVoiceMirrorCorrectWords(comparison.correctWords);
-      setVoiceMirrorScore({
-        matched: comparison.matched,
-        total: comparison.total,
-        percent: comparison.percent,
-      });
+      await assessVoiceMirrorPronunciation(match.verseText, comparison, transcribedText);
 
       setVoiceMirrorState('mirror');
     } catch (err) {
@@ -2604,16 +3257,30 @@ export default function App() {
     setVoiceMirrorWordRows([]);
     setVoiceMirrorCorrectWords([]);
     setVoiceMirrorScore({ matched: 0, total: 0, percent: 0 });
+    setVoiceMirrorDetailedScores({ pronunciationScore: 0, accuracyScore: 0, fluencyScore: 0, completenessScore: 0 });
     stopVoiceMirrorMediaCapture();
     stopAndReleaseVoiceMirrorUserAudio();
     voiceMirrorRecordedChunksRef.current = [];
+    voiceMirrorRecordedBlobRef.current = null;
     voiceMirrorLiveTranscriptRef.current = '';
     voiceMirrorShouldMatchRef.current = false;
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      voiceMirrorMediaStreamRef.current = stream;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setVoiceMirrorError('Please allow microphone access in your browser settings to use Voice Mirror');
+      return;
+    }
 
+    let stream;
+    try {
+      // Explicitly request mic permission before starting speech recognition.
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voiceMirrorMediaStreamRef.current = stream;
+    } catch {
+      setVoiceMirrorError('Please allow microphone access in your browser settings to use Voice Mirror');
+      return;
+    }
+
+    try {
       if (typeof MediaRecorder === 'undefined') {
         throw new Error('MediaRecorder is not supported in this browser.');
       }
@@ -2638,6 +3305,7 @@ export default function App() {
         }
 
         const blob = new Blob(chunks, { type: mimeType || 'audio/mp4' });
+        voiceMirrorRecordedBlobRef.current = blob;
         const objectUrl = URL.createObjectURL(blob);
 
         setVoiceMirrorUserAudioUrl((currentUrl) => {
@@ -2681,9 +3349,9 @@ export default function App() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = 'ar-SA';
+    recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.continuous = true;
+    recognition.lang = 'ar-SA';
 
     let finalizedTranscript = '';
 
@@ -2705,7 +3373,21 @@ export default function App() {
     };
 
     recognition.onerror = (event) => {
-      setVoiceMirrorError(`Voice recognition error: ${event.error || 'unknown error'}`);
+      const errorType = String(event?.error || 'unknown');
+      console.error('[tilawah] Voice recognition error', errorType, event);
+
+      let message = 'Voice recognition encountered an error. Please try again.';
+      if (errorType === 'not-allowed') {
+        message = 'Please allow microphone access in your browser settings to use Voice Mirror';
+      } else if (errorType === 'no-speech') {
+        message = 'No speech was detected. Please recite clearly and try again.';
+      } else if (errorType === 'network') {
+        message = 'Network issue while recognizing speech. Please check your connection and try again.';
+      } else if (errorType === 'aborted') {
+        message = 'Voice recording was stopped before completion.';
+      }
+
+      setVoiceMirrorError(message);
       setIsVoiceRecording(false);
     };
 
@@ -2972,6 +3654,27 @@ export default function App() {
     }
   }
 
+  function onAudioVolumeChange(event) {
+    const nextVolume = Math.max(0, Math.min(1, Number(event.target.value)));
+    setAudioVolume(nextVolume);
+    setIsAudioMuted(nextVolume === 0);
+  }
+
+  function toggleAudioMute() {
+    setIsAudioMuted((current) => !current);
+  }
+
+  function selectAudioPlaybackRate(rate) {
+    const nextRate = Math.max(0.5, Math.min(1, Number(rate)));
+    setAudioPlaybackRate(nextRate);
+  }
+
+  function toggleAudioMenu(event) {
+    event.stopPropagation();
+    console.log('[tilawah] audio menu trigger clicked');
+    setIsAudioMenuOpen((current) => !current);
+  }
+
   useEffect(() => {
     if (!isAudioPlaying || !currentAudio?.verseId) {
       return;
@@ -3119,13 +3822,101 @@ export default function App() {
 
   const similarityTone =
     voiceMirrorAnimatedPercent > 70 ? 'high' : voiceMirrorAnimatedPercent >= 50 ? 'mid' : 'low';
+  const voiceMirrorMetricRows = [
+    { label: 'Accuracy', value: Math.round(Number(voiceMirrorDetailedScores.accuracyScore || 0)) },
+    { label: 'Fluency', value: Math.round(Number(voiceMirrorDetailedScores.fluencyScore || 0)) },
+    { label: 'Completeness', value: Math.round(Number(voiceMirrorDetailedScores.completenessScore || 0)) },
+  ];
+  const getVoiceMirrorWordScore = (row) =>
+    Math.round(Number(row?.accuracyScore ?? (row?.similarityScore || 0) * 100));
+  const getVoiceMirrorWordClass = (row) => {
+    const errorType = String(row?.errorType || 'None');
+    if (errorType === 'Omission') {
+      return 'word-omission';
+    }
+
+    if (row?.transcriptMismatch) {
+      return 'word-okay';
+    }
+
+    const score = getVoiceMirrorWordScore(row);
+    if (score >= 90) {
+      return 'word-great';
+    }
+    if (score >= 75) {
+      return 'word-okay';
+    }
+    return 'word-needs-work';
+  };
   const voiceMirrorMistakes = voiceMirrorWordRows.filter(
     (row) =>
-      !row.matched &&
-      (String(row.userWord || '').trim() || String(row.quranWord || '').trim())
+      (Number(row?.accuracyScore ?? (row?.similarityScore || 0) * 100) < 70 || String(row?.errorType || 'None') !== 'None') &&
+      String(row?.quranWord || row?.userWord || '').trim()
   );
-  const displayedProfileName =
-    String(authSession.user?.name || authSession.user?.email || '').trim() || profileName;
+  const oauthDisplayName = String(authSession.user?.name || authSession.user?.email || '').trim();
+  const displayedProfileName = authSession.loggedIn ? oauthDisplayName || 'Friend' : profileName;
+  const headerProfileName = authSession.loggedIn ? getFirstName(oauthDisplayName) || 'User' : profileName;
+  const currentUserId = String(authSession.user?.sub || authSession.user?.email || oauthDisplayName || '').trim();
+  const currentUserVote = Number(groupData?.wirdVotes?.[currentUserId] || 0);
+  const sortedGroupMembers = Array.isArray(groupData?.members)
+    ? [...groupData.members].sort((a, b) => Number(b?.versesToday || 0) - Number(a?.versesToday || 0))
+    : [];
+  const groupUpdatedLabel = groupLastUpdatedAt
+    ? new Date(groupLastUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '';
+  const volumeIcon = isAudioMuted || audioVolume === 0 ? '🔇' : audioVolume < 0.5 ? '🔉' : '🔊';
+  const audioSpeedOptions = [0.5, 0.6, 0.7, 0.8, 0.9, 1];
+
+  if (!entryMode) {
+    return (
+      <main className="landing-shell">
+        <section className="landing-left" aria-label="Introductory Quran verse">
+          <div className="landing-hero-copy">
+            <p className="landing-verse-ar" dir="rtl" lang="ar" translate="no">
+              اقْرَأْ بِاسْمِ رَبِّكَ الَّذِي خَلَقَ
+            </p>
+            <p className="landing-verse-en">
+              Read in the name of your Lord who created
+              <span>Surah Al-Alaq 96:1</span>
+            </p>
+            <p className="landing-context">The first word revealed to the Prophet ﷺ was a command to read.</p>
+          </div>
+          <div className="landing-brand">Tilawah</div>
+        </section>
+
+        <section className="landing-right" aria-label="Authentication options">
+          <article className="landing-card">
+            <h1>Tilawah</h1>
+            <p className="landing-tagline">Your personal Quran companion</p>
+
+            <button
+              type="button"
+              className="landing-guest-btn"
+              onClick={continueAsGuest}
+            >
+              Continue as Guest
+            </button>
+
+            <div className="landing-divider" aria-hidden="true">
+              <span />
+              <strong>or</strong>
+              <span />
+            </div>
+
+            <button
+              type="button"
+              className="landing-signin-btn"
+              onClick={startQuranFoundationLogin}
+            >
+              Sign in with Quran Foundation
+            </button>
+
+            <p className="landing-footnote">Sign in to sync your bookmarks, streaks, and reflections across devices</p>
+          </article>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className={`reader-layout theme-${readerTheme}`}>
@@ -3203,6 +3994,10 @@ export default function App() {
           </>
         ) : drawerTab === 'bookmarks' ? (
           <div className="bookmark-list" role="tabpanel" aria-label="Bookmarks">
+            <div className="bookmark-section-header">
+              <h3>Bookmarks</h3>
+              {authSession.loggedIn ? <span className="synced-badge">Synced</span> : null}
+            </div>
             {bookmarkItems.length === 0 ? (
               <p className="bookmark-empty">
                 No bookmarks yet — tap the bookmark icon on any verse to save it here.
@@ -3239,7 +4034,8 @@ export default function App() {
             {selectedChapter?.name_simple || 'Surahs'} <span aria-hidden="true">▾</span>
           </button>
           <div className="reading-header-info" aria-live="polite">
-            Page {centeredVerseData?.page_number || '-'} · Juz {centeredVerseData?.juz_number || '-'} / Hizb {centeredVerseData?.hizb_number || '-'}
+            <span className="reading-header-page">Page {centeredVerseData?.page_number || '-'}</span>
+            <span className="reading-header-meta"> · Juz {centeredVerseData?.juz_number || '-'} / Hizb {centeredVerseData?.hizb_number || '-'}</span>
           </div>
           <div className="header-right-controls">
             <button
@@ -3254,14 +4050,6 @@ export default function App() {
               <span className="settings-icon" aria-hidden="true" />
             </button>
             <button
-              className="voice-mirror-trigger"
-              type="button"
-              aria-label="Open Voice Mirror"
-              onClick={openVoiceMirror}
-            >
-              🎤
-            </button>
-            <button
               className="user-trigger"
               type="button"
               onClick={() => {
@@ -3269,7 +4057,7 @@ export default function App() {
                 setActivePage('profile');
               }}
             >
-              {profileName}
+              {headerProfileName}
             </button>
           </div>
         </header> : null}
@@ -3314,7 +4102,6 @@ export default function App() {
                   verse.translation?.text ||
                   '';
                 const interactiveWords = buildInteractiveWords(verse);
-                const tafsirText = tafsirByChapter[selectedChapter?.id]?.[verseId];
                 const isBookmarked = bookmarks.has(verseId);
 
                 return (
@@ -3415,8 +4202,16 @@ export default function App() {
                     </div>
 
                     {expandedTafsir[verseId] ? (
-                      <div className="tafsir-box" dangerouslySetInnerHTML={{ __html: tafsirText || 'No tafsir available for this verse.' }} />
+                      <div
+                        className="tafsir-box"
+                        dangerouslySetInnerHTML={{
+                          __html:
+                            tafsirByChapter[selectedChapter.id]?.[verseId] ||
+                            'No tafsir available for this verse.',
+                        }}
+                      />
                     ) : null}
+
                   </article>
                 );
               })}
@@ -3435,6 +4230,30 @@ export default function App() {
             >
               ← Back to Reading
             </button>
+
+            <div className="profile-page-tabs" role="tablist" aria-label="Profile sections">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={profileTab === 'stats'}
+                className={profileTab === 'stats' ? 'active' : ''}
+                onClick={() => setProfileTab('stats')}
+              >
+                Stats
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={profileTab === 'groups'}
+                className={profileTab === 'groups' ? 'active' : ''}
+                onClick={() => setProfileTab('groups')}
+              >
+                Groups
+              </button>
+            </div>
+
+            {profileTab === 'stats' ? (
+              <>
 
             <header className="profile-hero">
               <h2>As-salamu alaykum, {displayedProfileName}</h2>
@@ -3457,6 +4276,11 @@ export default function App() {
                 )}
               </div>
             </header>
+
+            <div className="profile-section-header">
+              <h3>Streak</h3>
+              {authSession.loggedIn ? <span className="synced-badge">Synced</span> : null}
+            </div>
 
             <section className="profile-stats-row" aria-label="Reading streak statistics">
               <article className="profile-stat-tile">
@@ -3510,7 +4334,7 @@ export default function App() {
                       role="tab"
                       aria-selected={selected}
                       className={`profile-goal-pill ${selected ? 'active' : ''}`}
-                      onClick={() => setDailyGoal(option.id)}
+                      onClick={() => handleDailyGoalSelection(option.id)}
                     >
                       {option.label}
                     </button>
@@ -3634,41 +4458,161 @@ export default function App() {
                 </div>
               )}
             </section>
+              </>
+            ) : (
+              <section className="groups-panel" aria-live="polite">
+                {!authSession.loggedIn ? (
+                  <div className="groups-empty-state">
+                    <p>Sign in to join or create a group</p>
+                    <button type="button" className="profile-auth-btn" onClick={startQuranFoundationLogin}>
+                      Sign In with Quran Foundation
+                    </button>
+                  </div>
+                ) : groupData ? (
+                  <div className="group-dashboard">
+                    <header className="group-header">
+                      <h3>{groupData.name}</h3>
+                      <small>Share code: {groupData.code}</small>
+                    </header>
+
+                    <section className="group-goal-box">
+                      <h4>Wird Goal</h4>
+                      <p>{Number(groupData.wirdGoal || 10)} verses/day</p>
+                      <div className="group-vote-pills">
+                        {GROUP_VOTE_OPTIONS.map((vote) => (
+                          <button
+                            key={vote}
+                            type="button"
+                            className={`group-vote-pill ${currentUserVote === vote ? 'active' : ''}`}
+                            onClick={() => voteOnGroupWird(vote)}
+                          >
+                            {vote}
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+
+                    <section className="group-leaderboard">
+                      <h4>Leaderboard</h4>
+                      <div className="group-member-list">
+                        {sortedGroupMembers.map((member) => {
+                          const memberToday = Number(member?.versesToday || 0);
+                          const goal = Math.max(1, Number(groupData?.wirdGoal || 10));
+                          const progress = Math.min(100, (memberToday / goal) * 100);
+                          const isCurrentUser = String(member?.userId || '') === currentUserId;
+
+                          return (
+                            <article key={String(member?.userId || member?.name)} className={`group-member-row ${isCurrentUser ? 'is-me' : ''}`}>
+                              <div className="group-member-head">
+                                <strong>{member?.name || 'Member'}</strong>
+                                <span>{memberToday} today</span>
+                              </div>
+                              <div className="group-progress-track" aria-hidden="true">
+                                <div className="group-progress-fill" style={{ width: `${progress}%` }} />
+                              </div>
+                              <div className="group-member-meta">
+                                <span>{Number(member?.totalVerses || 0)} total</span>
+                                <span>{memberToday >= goal ? '✓ Goal hit' : 'In progress'}</span>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </section>
+
+                    <div className="group-refresh-row">
+                      <small>{groupUpdatedLabel ? `Last updated ${groupUpdatedLabel}` : 'Last updated just now'}</small>
+                      <button
+                        type="button"
+                        className="profile-auth-btn"
+                        onClick={() => loadGroupByCode(groupData?.code || groupCode)}
+                        disabled={isGroupLoading}
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="groups-empty-state">
+                    <div className="groups-actions">
+                      <button type="button" className="profile-auth-btn" onClick={createGroup} disabled={isGroupLoading}>
+                        Create a Group
+                      </button>
+                    </div>
+                    <div className="group-join-form">
+                      <input
+                        type="text"
+                        value={joinGroupCode}
+                        onChange={(event) => setJoinGroupCode(event.target.value.toUpperCase().slice(0, 6))}
+                        placeholder="Enter 6-character code"
+                      />
+                      <button type="button" className="profile-auth-btn" onClick={joinGroup} disabled={isGroupLoading}>
+                        Join a Group
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {groupError ? <p className="group-error-text">{groupError}</p> : null}
+              </section>
+            )}
           </section>
         )}
       </section>
 
       {activePage === 'reader' ? <div className={`global-audio-bar ${isAudioBarVisible ? 'visible' : ''}`} aria-hidden={!isAudioBarVisible}>
+        <div className="audio-volume-group">
+          <button
+            type="button"
+            className="audio-volume-toggle"
+            onClick={toggleAudioMute}
+            aria-label={isAudioMuted || audioVolume === 0 ? 'Unmute audio' : 'Mute audio'}
+          >
+            <span aria-hidden="true">{volumeIcon}</span>
+          </button>
+          <input
+            className="audio-volume-slider"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={isAudioMuted ? 0 : audioVolume}
+            onChange={onAudioVolumeChange}
+            aria-label="Audio volume"
+          />
+        </div>
         <div className="audio-meta">
           <strong>{currentAudio ? `${currentAudio.chapterName} · ${currentAudio.verseKey}` : 'No surah selected'}</strong>
           <span>{currentAudio ? currentAudio.verseText || `Verse ${currentAudio.verseNumber}` : 'Choose a verse audio'}</span>
         </div>
-        <button
-          className="global-nav-btn"
-          type="button"
-          onClick={() => navigateToAdjacentVerse(-1)}
-          disabled={!hasPreviousVerse}
-          aria-label="Previous verse"
-        >
-          ⏮
-        </button>
-        <button
-          className="global-play-btn"
-          type="button"
-          onClick={toggleGlobalPlayPause}
-          disabled={!currentAudio}
-        >
-          {isAudioPlaying ? '⏸' : '▶'}
-        </button>
-        <button
-          className="global-nav-btn"
-          type="button"
-          onClick={() => navigateToAdjacentVerse(1)}
-          disabled={!hasNextVerse}
-          aria-label="Next verse"
-        >
-          ⏭
-        </button>
+        <div className="audio-transport-group">
+          <button
+            className="global-nav-btn"
+            type="button"
+            onClick={() => navigateToAdjacentVerse(-1)}
+            disabled={!hasPreviousVerse}
+            aria-label="Previous verse"
+          >
+            ⏮
+          </button>
+          <button
+            className="global-play-btn"
+            type="button"
+            onClick={toggleGlobalPlayPause}
+            disabled={!currentAudio}
+          >
+            {isAudioPlaying ? '⏸' : '▶'}
+          </button>
+          <button
+            className="global-nav-btn"
+            type="button"
+            onClick={() => navigateToAdjacentVerse(1)}
+            disabled={!hasNextVerse}
+            aria-label="Next verse"
+          >
+            ⏭
+          </button>
+        </div>
         <input
           className="audio-progress"
           type="range"
@@ -3680,14 +4624,78 @@ export default function App() {
           disabled={!currentAudio}
           aria-label="Audio progress"
         />
-        <button
-          className="global-close-btn"
-          type="button"
-          aria-label="Close audio player"
-          onClick={closeAudioBar}
-        >
-          ✕
-        </button>
+        <div className="audio-right-group" ref={audioBarMenuRef}>
+          {audioPlaybackRate !== 1 ? <span className="audio-speed-indicator">{audioPlaybackRate.toFixed(1)}x</span> : null}
+          <div className="audio-menu-wrap">
+            <button
+              type="button"
+              className="audio-menu-trigger"
+              aria-label="Audio player options"
+              onClick={toggleAudioMenu}
+            >
+              ⋯
+            </button>
+
+            {isAudioMenuOpen ? (
+              <div className="audio-menu-popover" role="menu" aria-label="Audio options">
+                <section className="audio-menu-section">
+                  <h4>Reciter</h4>
+                  <div className="audio-menu-reciter-list">
+                    {DEFAULT_RECITER_OPTIONS.map((option) => {
+                      const selected = selectedReciterId === option.id;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={`audio-menu-reciter-option ${selected ? 'active' : ''}`}
+                          onClick={() => {
+                            setSelectedReciterId(option.id);
+                            setIsAudioMenuOpen(false);
+                          }}
+                        >
+                          <span>{option.label} (ID: {option.id})</span>
+                          {selected ? <span aria-hidden="true">✓</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="audio-menu-section">
+                  <h4>Playback Speed</h4>
+                  <div className="audio-menu-speed-list">
+                    {audioSpeedOptions.map((speed) => {
+                      const selected = audioPlaybackRate === speed;
+                      const label = speed === 1 ? '1x (Normal)' : `${speed.toFixed(1)}x`;
+                      return (
+                        <button
+                          key={speed}
+                          type="button"
+                          className={`audio-menu-speed-option ${selected ? 'active' : ''}`}
+                          onClick={() => {
+                            selectAudioPlaybackRate(speed);
+                            setIsAudioMenuOpen(false);
+                          }}
+                        >
+                          <span>{label}</span>
+                          {selected ? <span aria-hidden="true">✓</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            ) : null}
+          </div>
+          <button
+            className="global-close-btn"
+            type="button"
+            aria-label="Close audio player"
+            onClick={closeAudioBar}
+          >
+            ✕
+          </button>
+        </div>
         <audio
           ref={audioRef}
           preload="none"
@@ -3705,6 +4713,15 @@ export default function App() {
         />
         <audio ref={wordAudioRef} preload="none" />
       </div> : null}
+
+      {activePage === 'reader' ? <button
+        type="button"
+        className="voice-mirror-fab"
+        aria-label="Open Voice Mirror"
+        onClick={openVoiceMirror}
+      >
+        🎤
+      </button> : null}
 
       {activePage === 'reader' ? <button
         type="button"
@@ -3860,8 +4877,13 @@ export default function App() {
                     <h4>You</h4>
                     <div className="voice-mirror-words voice-mirror-user-pills" dir="rtl" lang="ar">
                       {voiceMirrorWordRows.map((row, index) => (
-                        <span key={`spoken-${index}`} className={row.matched ? 'word-match' : 'word-miss'}>
-                          {String(row.userWord || '').trim() || '∅'}
+                        <span
+                          key={`spoken-${index}`}
+                          className={getVoiceMirrorWordClass(row)}
+                          data-score={`${getVoiceMirrorWordScore(row)}%`}
+                          title={`Score: ${getVoiceMirrorWordScore(row)}%`}
+                        >
+                          {String(row.quranWord || row.userWord || '').trim() || '∅'}
                         </span>
                       ))}
                     </div>
@@ -3892,24 +4914,42 @@ export default function App() {
                 </div>
 
                 <div className="voice-mirror-similarity">
-                  <p className="voice-mirror-similarity-label">Similarity to Reciter</p>
+                  <p className="voice-mirror-similarity-label">Pronunciation Score</p>
                   <p className={`voice-mirror-similarity-value ${similarityTone}`}>{voiceMirrorAnimatedPercent}%</p>
                   <div className="voice-mirror-similarity-bar" aria-hidden="true">
                     <div className={`voice-mirror-similarity-fill ${similarityTone}`} style={{ width: `${voiceMirrorAnimatedPercent}%` }} />
+                  </div>
+                  <p className="voice-mirror-similarity-note">
+                    Harakat (short vowel) accuracy requires careful listening - compare your recitation with the reciter using the Play buttons above.
+                  </p>
+                  <div className="voice-mirror-subscores">
+                    {voiceMirrorMetricRows.map((metric) => (
+                      <div key={metric.label} className="voice-mirror-subscore-item">
+                        <div className="voice-mirror-subscore-head">
+                          <span>{metric.label}</span>
+                          <strong>{metric.value}%</strong>
+                        </div>
+                        <div className="voice-mirror-subscore-bar" aria-hidden="true">
+                          <div className="voice-mirror-subscore-fill" style={{ width: `${metric.value}%` }} />
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
                 <section className="voice-mirror-mistakes">
                   {voiceMirrorMistakes.length > 0 ? (
                     <>
-                      <h5>Word-by-word mistakes</h5>
+                      <h5>Word-by-word breakdown</h5>
                       <div className="voice-mirror-mistake-grid">
-                        <strong>You said</strong>
-                        <strong>Correct</strong>
+                        <strong>Word</strong>
+                        <strong>Score</strong>
+                        <strong>Issue</strong>
                         {voiceMirrorMistakes.map((row, index) => (
                           <div className="voice-mirror-mistake-row" key={`mistake-${index}`}>
-                            <span dir="rtl" lang="ar">{row.userWord || '—'}</span>
-                            <span dir="rtl" lang="ar">{row.quranWord || '—'}</span>
+                            <span dir="rtl" lang="ar">{row.quranWord || row.userWord || '—'}</span>
+                            <span>{Math.round(Number(row.accuracyScore ?? (row.similarityScore || 0) * 100))}%</span>
+                            <span>{String(row.errorType || 'None')}</span>
                           </div>
                         ))}
                       </div>
