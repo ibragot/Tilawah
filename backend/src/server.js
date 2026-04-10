@@ -1,18 +1,30 @@
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const axios = require('axios');
 const morgan = require('morgan');
+const session = require('express-session');
+const fetch = require('node-fetch');
 const dotenv = require('dotenv');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 const QURAN_CLIENT_ID = process.env.QURAN_CLIENT_ID || process.env.QURAN_PRELIVE_CLIENT_ID;
 const QURAN_CLIENT_SECRET = process.env.QURAN_CLIENT_SECRET || process.env.QURAN_PRELIVE_CLIENT_SECRET;
 const QURAN_AUTH_URL = (process.env.QURAN_AUTH_URL || process.env.QURAN_PRELIVE_AUTH_URL || '').replace(/\/$/, '');
 const QURAN_API_URL = (process.env.QURAN_API_URL || process.env.QURAN_PRELIVE_API_URL || '').replace(/\/$/, '');
 const QURAN_PUBLIC_API_URL = (process.env.QURAN_PUBLIC_API_URL || 'https://api.quran.com').replace(/\/$/, '');
+const OAUTH_BASE_URL = (process.env.QURAN_OAUTH_BASE_URL || 'https://prelive-oauth2.quran.foundation').replace(/\/$/, '');
+const USER_API_BASE_URL = (process.env.QURAN_USER_API_BASE_URL || 'https://prelive-apis.quran.foundation').replace(/\/$/, '');
+const OAUTH_REDIRECT_URI = process.env.QURAN_OAUTH_REDIRECT_URI || 'http://localhost:3000/callback';
+const OAUTH_LOGOUT_URI = process.env.QURAN_OAUTH_LOGOUT_URI || 'http://localhost:3000/logout';
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+const OAUTH_SCOPES =
+  process.env.QURAN_OAUTH_SCOPES ||
+  'openid offline_access user bookmark reading_session goal streak';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'tilawah-dev-session-secret';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = 'gemini-2.0-flash';
 
@@ -76,6 +88,119 @@ function buildFallbackReflectionQuestion(verseKey, translation) {
   }
 
   return `What does verse ${verseKey} stir in your heart right now? What is one small, sincere response you can make today?`;
+}
+
+function toBase64Url(buffer) {
+  return buffer
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+function createPkcePair() {
+  const codeVerifier = toBase64Url(crypto.randomBytes(48));
+  const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+  const state = toBase64Url(crypto.randomBytes(24));
+  return { codeVerifier, codeChallenge, state };
+}
+
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') {
+    return null;
+  }
+
+  const parts = token.split('.');
+  if (parts.length < 2) {
+    return null;
+  }
+
+  try {
+    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = payload + '='.repeat((4 - (payload.length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeUserFromIdToken(idToken) {
+  const payload = decodeJwtPayload(idToken) || {};
+  const name = String(payload.name || payload.preferred_username || payload.nickname || '').trim();
+  const email = String(payload.email || '').trim();
+
+  if (!name && !email) {
+    return null;
+  }
+
+  return {
+    name: name || email,
+    email,
+    sub: String(payload.sub || '').trim(),
+  };
+}
+
+async function exchangeOAuthToken(params) {
+  const tokenBody = new URLSearchParams(params);
+  const response = await fetch(`${OAUTH_BASE_URL}/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: tokenBody.toString(),
+  });
+
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.error_description || payload?.error || 'OAuth token exchange failed');
+  }
+
+  if (!payload?.access_token) {
+    throw new Error('OAuth response missing access_token');
+  }
+
+  return payload;
+}
+
+async function getUserSessionToken(req) {
+  const auth = req.session?.auth;
+  if (!auth?.accessToken) {
+    return null;
+  }
+
+  if (Date.now() < Number(auth.expiresAt || 0) - 5000) {
+    return auth.accessToken;
+  }
+
+  if (!auth.refreshToken) {
+    return null;
+  }
+
+  const refreshed = await exchangeOAuthToken({
+    grant_type: 'refresh_token',
+    refresh_token: auth.refreshToken,
+    client_id: QURAN_CLIENT_ID,
+    client_secret: QURAN_CLIENT_SECRET,
+  });
+
+  const expiresIn = Number(refreshed.expires_in || 3600);
+  req.session.auth = {
+    ...auth,
+    accessToken: refreshed.access_token,
+    refreshToken: refreshed.refresh_token || auth.refreshToken,
+    idToken: refreshed.id_token || auth.idToken,
+    user: refreshed.id_token ? normalizeUserFromIdToken(refreshed.id_token) || auth.user : auth.user,
+    expiresAt: Date.now() + expiresIn * 1000,
+  };
+
+  return req.session.auth.accessToken;
 }
 
 if (!QURAN_CLIENT_ID || !QURAN_CLIENT_SECRET || !QURAN_AUTH_URL || !QURAN_API_URL) {
@@ -265,6 +390,158 @@ async function forwardToPublicQuranApi(upstreamPath, query) {
 const app = express();
 app.use(morgan('dev'));
 app.use(express.json());
+app.use(
+  session({
+    name: 'tilawah.sid',
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: false,
+      maxAge: 1000 * 60 * 60 * 24 * 14,
+    },
+  })
+);
+
+app.get('/api/auth/login', (req, res) => {
+  const { codeVerifier, codeChallenge, state } = createPkcePair();
+  req.session.oauth = {
+    codeVerifier,
+    state,
+    createdAt: Date.now(),
+  };
+
+  const authUrl = new URL(`${OAUTH_BASE_URL}/oauth2/auth`);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', QURAN_CLIENT_ID);
+  authUrl.searchParams.set('redirect_uri', OAUTH_REDIRECT_URI);
+  authUrl.searchParams.set('scope', OAUTH_SCOPES);
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  authUrl.searchParams.set('state', state);
+
+  req.session.save(() => {
+    res.redirect(authUrl.toString());
+  });
+});
+
+app.get('/callback', async (req, res) => {
+  const code = String(req.query?.code || '').trim();
+  const returnedState = String(req.query?.state || '').trim();
+  const storedState = String(req.session?.oauth?.state || '').trim();
+  const codeVerifier = String(req.session?.oauth?.codeVerifier || '').trim();
+
+  if (!code || !returnedState || !storedState || returnedState !== storedState || !codeVerifier) {
+    return res.status(400).json({ message: 'Invalid OAuth callback state or code verifier' });
+  }
+
+  try {
+    const tokenPayload = await exchangeOAuthToken({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: OAUTH_REDIRECT_URI,
+      client_id: QURAN_CLIENT_ID,
+      client_secret: QURAN_CLIENT_SECRET,
+      code_verifier: codeVerifier,
+    });
+
+    const expiresIn = Number(tokenPayload.expires_in || 3600);
+    req.session.auth = {
+      accessToken: tokenPayload.access_token,
+      refreshToken: tokenPayload.refresh_token || '',
+      idToken: tokenPayload.id_token || '',
+      user: normalizeUserFromIdToken(tokenPayload.id_token),
+      expiresAt: Date.now() + expiresIn * 1000,
+    };
+    delete req.session.oauth;
+
+    return req.session.save(() => {
+      res.redirect(`${FRONTEND_ORIGIN}?loggedIn=true`);
+    });
+  } catch (error) {
+    console.error('[oauth] Callback exchange failed:', error.message);
+    return res.status(500).json({ message: error.message || 'OAuth callback failed' });
+  }
+});
+
+app.get('/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.redirect(FRONTEND_ORIGIN);
+  });
+});
+
+app.get('/api/auth/session', (req, res) => {
+  const auth = req.session?.auth;
+  if (!auth?.accessToken) {
+    return res.status(200).json({ loggedIn: false, accessToken: '', user: null });
+  }
+
+  return res.status(200).json({
+    loggedIn: true,
+    accessToken: auth.accessToken,
+    user: auth.user || null,
+  });
+});
+
+async function forwardToUserApi(req, res, { method, path: upstreamPath }) {
+  let accessToken;
+  try {
+    accessToken = await getUserSessionToken(req);
+  } catch (error) {
+    console.error('[oauth] Failed to refresh session token:', error.message);
+    return res.status(401).json({ message: 'Session expired. Please sign in again.' });
+  }
+
+  if (!accessToken) {
+    return res.status(401).json({ message: 'Not authenticated' });
+  }
+
+  const url = new URL(`${USER_API_BASE_URL}/auth/v1/${upstreamPath}`);
+  if (method === 'GET') {
+    Object.entries(req.query || {}).forEach(([key, value]) => {
+      if (Array.isArray(value)) {
+        value.forEach((item) => url.searchParams.append(key, String(item)));
+      } else if (value !== undefined && value !== null) {
+        url.searchParams.set(key, String(value));
+      }
+    });
+  }
+
+  const headers = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'x-auth-token': accessToken,
+    'x-client-id': QURAN_CLIENT_ID,
+  };
+
+  try {
+    const upstreamResponse = await fetch(url.toString(), {
+      method,
+      headers,
+      body: method === 'POST' ? JSON.stringify(req.body || {}) : undefined,
+    });
+
+    const contentType = upstreamResponse.headers.get('content-type') || '';
+    const payload = contentType.includes('application/json')
+      ? await upstreamResponse.json().catch(() => ({}))
+      : await upstreamResponse.text();
+
+    return res.status(upstreamResponse.status).send(payload);
+  } catch (error) {
+    return res.status(502).json({ message: error.message || 'Failed to reach Quran user API' });
+  }
+}
+
+app.get('/api/user/bookmarks', (req, res) => forwardToUserApi(req, res, { method: 'GET', path: 'bookmarks' }));
+app.post('/api/user/bookmarks', (req, res) => forwardToUserApi(req, res, { method: 'POST', path: 'bookmarks' }));
+app.get('/api/user/streaks', (req, res) => forwardToUserApi(req, res, { method: 'GET', path: 'streaks' }));
+app.post('/api/user/reading-sessions', (req, res) =>
+  forwardToUserApi(req, res, { method: 'POST', path: 'reading-sessions' })
+);
+app.get('/api/user/goals', (req, res) => forwardToUserApi(req, res, { method: 'GET', path: 'goals' }));
+app.post('/api/user/goals', (req, res) => forwardToUserApi(req, res, { method: 'POST', path: 'goals' }));
 
 app.get('/api/ai/reflect', (_req, res) => {
   return res.status(405).json({
@@ -508,14 +785,10 @@ app.get('/api/quran/*', async (req, res) => {
   }
 });
 
-(async function startServer() {
-  try {
-    await getAccessToken();
-    app.listen(PORT, () => {
-      console.log(`Backend server listening on http://localhost:${PORT}`);
-    });
-  } catch (error) {
-    console.error('[startup] Failed to fetch initial access token:', error.message);
-    process.exit(1);
-  }
-})();
+app.listen(PORT, () => {
+  console.log(`Backend server listening on http://localhost:${PORT}`);
+
+  getAccessToken().catch((error) => {
+    console.error('[startup] Initial content token prefetch failed (will retry on demand):', error.message);
+  });
+});

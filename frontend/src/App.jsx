@@ -493,6 +493,7 @@ export default function App() {
   const activeReadTimerRef = useRef(null);
   const actionLogRef = useRef(readStoredActionLog());
   const streakRef = useRef(normalizeStreakForToday(readStoredStreak()));
+  const authSessionRef = useRef({ loggedIn: false, user: null, accessToken: '' });
   const dailyCoinsRef = useRef(readStoredDailyCoins());
   const lifetimeCoinsRef = useRef(readStoredLifetimeCoins());
   const [chapters, setChapters] = useState([]);
@@ -573,6 +574,8 @@ export default function App() {
     const raw = Number.parseInt(localStorage.getItem(RECITER_ID_STORAGE_KEY) || '7', 10);
     return Number.isFinite(raw) ? raw : 7;
   });
+  const [authSession, setAuthSession] = useState({ checked: false, loggedIn: false, accessToken: '', user: null });
+  const [serverStreak, setServerStreak] = useState(null);
 
   const todayKey = getTodayKey();
   const todaysActions = useMemo(() => {
@@ -592,6 +595,172 @@ export default function App() {
     () => Object.values(streak.activityLog || {}).filter((count) => Number(count) > 0).length,
     [streak.activityLog]
   );
+
+  async function fetchAuthSession() {
+    try {
+      const response = await fetch('/api/auth/session');
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Failed to fetch auth session');
+      }
+
+      const nextSession = {
+        checked: true,
+        loggedIn: Boolean(payload?.loggedIn),
+        accessToken: String(payload?.accessToken || ''),
+        user: payload?.user || null,
+      };
+      setAuthSession(nextSession);
+      authSessionRef.current = {
+        loggedIn: nextSession.loggedIn,
+        user: nextSession.user,
+        accessToken: nextSession.accessToken,
+      };
+    } catch {
+      setAuthSession({ checked: true, loggedIn: false, accessToken: '', user: null });
+      authSessionRef.current = { loggedIn: false, user: null, accessToken: '' };
+    }
+  }
+
+  function startQuranFoundationLogin() {
+    window.location.href = '/api/auth/login';
+  }
+
+  function signOutQuranFoundation() {
+    window.location.href = 'http://localhost:3000/logout';
+  }
+
+  async function syncBookmarksFromServer() {
+    if (!authSessionRef.current.loggedIn) {
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/user/bookmarks');
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json();
+      const listCandidates = [payload?.bookmarks, payload?.data, payload?.results, payload];
+      const rawList = listCandidates.find((candidate) => Array.isArray(candidate)) || [];
+
+      const parsed = rawList
+        .map((item) => {
+          const verseKey = String(item?.verse_key || item?.verseKey || item?.key || '').trim();
+          if (!verseKey) {
+            return null;
+          }
+
+          const [chapterPart, versePart] = verseKey.split(':');
+          const verseId = String(Number.parseInt(versePart || '0', 10) || versePart || verseKey);
+
+          return {
+            verseId,
+            detail: {
+              chapterId: Number.parseInt(chapterPart || '0', 10) || null,
+              verseKey,
+              surahName: String(item?.chapter_name || item?.surah_name || '').trim(),
+              preview: String(item?.note || item?.text || item?.verse_text || '').trim() || `Saved verse ${verseKey}`,
+            },
+          };
+        })
+        .filter(Boolean);
+
+      if (!parsed.length) {
+        return;
+      }
+
+      setBookmarks(new Set(parsed.map((entry) => entry.verseId)));
+      setBookmarkDetails(
+        parsed.reduce((acc, entry) => {
+          acc[entry.verseId] = entry.detail;
+          return acc;
+        }, {})
+      );
+    } catch {
+      // Keep local bookmark state if server sync fails.
+    }
+  }
+
+  async function syncStreakFromServer() {
+    if (!authSessionRef.current.loggedIn) {
+      setServerStreak(null);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/user/streaks');
+      if (!response.ok) {
+        setServerStreak(null);
+        return;
+      }
+
+      const payload = await response.json();
+      const valueCandidates = [
+        payload?.current_streak,
+        payload?.currentStreak,
+        payload?.streak,
+        payload?.data?.current_streak,
+        payload?.data?.currentStreak,
+      ];
+      const nextValue = valueCandidates.find((value) => Number.isFinite(Number(value)));
+      setServerStreak(Number.isFinite(Number(nextValue)) ? Number(nextValue) : null);
+    } catch {
+      setServerStreak(null);
+    }
+  }
+
+  async function postBookmarkToServer(verse, isBookmarked) {
+    if (!authSessionRef.current.loggedIn) {
+      return;
+    }
+
+    const verseKey = String(verse?.verse_key || '').trim();
+    if (!verseKey) {
+      return;
+    }
+
+    try {
+      await fetch('/api/user/bookmarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          verse_key: verseKey,
+          chapter_id: Number(selectedChapter?.id || 0) || undefined,
+          bookmarked: isBookmarked,
+        }),
+      });
+    } catch {
+      // Keep local bookmark behavior even if server sync fails.
+    }
+  }
+
+  async function logReadingSessionToServer(verseId) {
+    if (!authSessionRef.current.loggedIn) {
+      return;
+    }
+
+    const verse = verses.find((item) => getVerseId(item) === String(verseId));
+    const verseKey = String(verse?.verse_key || '').trim();
+    if (!verseKey) {
+      return;
+    }
+
+    try {
+      await fetch('/api/user/reading-sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          verse_key: verseKey,
+          chapter_id: Number(selectedChapter?.id || 0) || undefined,
+          read_at: new Date().toISOString(),
+        }),
+      });
+    } catch {
+      // Do not block local progress updates if sync fails.
+    }
+  }
   const heatmapCalendar = useMemo(() => {
     const CELL = 13;
     const GAP = 3;
@@ -807,6 +976,33 @@ export default function App() {
 
     setSelectedReciterId(reciterOptions[0]?.id || 7);
   }, [reciterOptions, selectedReciterId]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const hasLoginFlag = url.searchParams.get('loggedIn') === 'true';
+    if (hasLoginFlag) {
+      url.searchParams.delete('loggedIn');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    }
+
+    fetchAuthSession();
+  }, []);
+
+  useEffect(() => {
+    authSessionRef.current = {
+      loggedIn: authSession.loggedIn,
+      accessToken: authSession.accessToken,
+      user: authSession.user,
+    };
+
+    if (!authSession.loggedIn) {
+      setServerStreak(null);
+      return;
+    }
+
+    syncBookmarksFromServer();
+    syncStreakFromServer();
+  }, [authSession.loggedIn, authSession.accessToken, authSession.user]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1305,6 +1501,7 @@ export default function App() {
   function awardReadCoin(verseId) {
     const key = String(verseId);
     earnCoinsForAction('read', key, 1);
+    logReadingSessionToServer(key);
   }
 
   function clearActiveReadTimer() {
@@ -1512,6 +1709,7 @@ export default function App() {
   function toggleBookmark(verse) {
     const verseId = getVerseId(verse);
     const isAlreadyBookmarked = bookmarks.has(verseId);
+    const nextBookmarkState = !isAlreadyBookmarked;
 
     setBookmarks((current) => {
       const next = new Set(current);
@@ -1533,6 +1731,7 @@ export default function App() {
         delete next[verseId];
         return next;
       });
+      postBookmarkToServer(verse, nextBookmarkState);
       return;
     }
 
@@ -1545,6 +1744,7 @@ export default function App() {
         preview: buildBookmarkPreview(verse),
       },
     }));
+    postBookmarkToServer(verse, nextBookmarkState);
   }
 
   function navigateToBookmark(bookmark) {
@@ -2924,6 +3124,8 @@ export default function App() {
       !row.matched &&
       (String(row.userWord || '').trim() || String(row.quranWord || '').trim())
   );
+  const displayedProfileName =
+    String(authSession.user?.name || authSession.user?.email || '').trim() || profileName;
 
   return (
     <main className={`reader-layout theme-${readerTheme}`}>
@@ -3235,17 +3437,35 @@ export default function App() {
             </button>
 
             <header className="profile-hero">
-              <h2>As-salamu alaykum, {profileName}</h2>
+              <h2>As-salamu alaykum, {displayedProfileName}</h2>
               <p>
                 {gregorianDateLabel}
                 {hijriDateLabel ? ` · ${hijriDateLabel} (Hijri)` : ''}
               </p>
+              <div className="profile-auth-row">
+                {authSession.loggedIn ? (
+                  <>
+                    <p className="profile-auth-text">Connected to Quran Foundation</p>
+                    <button type="button" className="profile-auth-btn" onClick={signOutQuranFoundation}>
+                      Sign Out
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="profile-auth-btn" onClick={startQuranFoundationLogin}>
+                    Sign In with Quran Foundation
+                  </button>
+                )}
+              </div>
             </header>
 
             <section className="profile-stats-row" aria-label="Reading streak statistics">
               <article className="profile-stat-tile">
                 <span>Current Streak</span>
                 <strong>🔥 {streakCount}</strong>
+              </article>
+              <article className="profile-stat-tile">
+                <span>Server Streak</span>
+                <strong>{serverStreak ?? '-'}</strong>
               </article>
               <article className="profile-stat-tile">
                 <span>Longest Streak</span>
