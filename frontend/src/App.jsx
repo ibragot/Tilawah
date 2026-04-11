@@ -7,6 +7,7 @@ const JOURNAL_ENTRIES_STORAGE_KEY = 'journal_entries';
 const ACTION_LOG_STORAGE_KEY = 'tilawah_action_log';
 const STREAK_STORAGE_KEY = 'tilawah_streak';
 const DAILY_GOAL_STORAGE_KEY = 'tilawah_daily_goal';
+const DAILY_PAGE_GOAL_STORAGE_KEY = 'dailyPageGoal';
 const DAILY_COINS_STORAGE_KEY = 'tilawah_daily_coins';
 const LIFETIME_COINS_STORAGE_KEY = 'tilawah_lifetime_coins';
 const SHOW_TRANSLATION_STORAGE_KEY = 'tilawah_show_translation';
@@ -18,6 +19,16 @@ const USER_GROUP_CODE_STORAGE_KEY = 'userGroupCode';
 const AUDIO_HOST = 'https://verses.quran.foundation';
 const READ_AWARD_DELAY_MS = 1500;
 const GROUP_VOTE_OPTIONS = [5, 10, 20, 40, 80];
+const VERSES_PER_PAGE = 15;
+const TOTAL_QURAN_PAGES = 604;
+
+const ISLAMIC_OCCASIONS = [
+  { name: 'Ramadan', month: 9, day: 1 },
+  { name: 'Eid al-Fitr', month: 10, day: 1 },
+  { name: 'Day of Arafah', month: 12, day: 9 },
+  { name: 'Eid al-Adha', month: 12, day: 10 },
+  { name: 'Ashura', month: 1, day: 10 },
+];
 
 const DEFAULT_RECITER_OPTIONS = [
   { id: 7, label: 'Mishary Rashid Al-Afasy' },
@@ -37,9 +48,9 @@ const DAILY_GOAL_OPTIONS = [
   { id: '10-verses', label: '10 verses', targetVerses: 10 },
   { id: '20-verses', label: '20 verses', targetVerses: 20 },
   { id: '1-page', label: '1 page', targetVerses: 15 },
-  { id: '1-rub', label: "1 Rub'", targetVerses: 40 },
-  { id: '1-hizb', label: '1 Hizb', targetVerses: 80 },
-  { id: '1-juz', label: '1 Juz', targetVerses: 604 },
+  { id: '1-rub', label: "1 Rub'", targetVerses: 60 },
+  { id: '1-hizb', label: '1 Hizb', targetVerses: 120 },
+  { id: '1-juz', label: '1 Juz', targetVerses: 300 },
 ];
 
 function extractReciterName(reciter) {
@@ -181,6 +192,81 @@ function formatHijriDate(date) {
   }
 }
 
+function getHijriMonthDay(date) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-TN-u-ca-islamic-nu-latn', {
+      day: 'numeric',
+      month: 'numeric',
+    }).formatToParts(date);
+    const monthPart = parts.find((part) => part.type === 'month')?.value;
+    const dayPart = parts.find((part) => part.type === 'day')?.value;
+    const month = Number.parseInt(String(monthPart || ''), 10);
+    const day = Number.parseInt(String(dayPart || ''), 10);
+
+    if (!Number.isFinite(month) || !Number.isFinite(day)) {
+      return null;
+    }
+
+    return { month, day };
+  } catch {
+    return null;
+  }
+}
+
+function getClosestIslamicOccasion(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  let closest = null;
+
+  for (let offset = -10; offset <= 10; offset += 1) {
+    const cursor = new Date(date);
+    cursor.setDate(cursor.getDate() + offset);
+    const hijriMonthDay = getHijriMonthDay(cursor);
+    if (!hijriMonthDay) {
+      continue;
+    }
+
+    ISLAMIC_OCCASIONS.forEach((occasion) => {
+      if (occasion.month !== hijriMonthDay.month || occasion.day !== hijriMonthDay.day) {
+        return;
+      }
+
+      const distance = Math.abs(offset);
+      const shouldReplace =
+        !closest ||
+        distance < closest.distance ||
+        (distance === closest.distance && offset >= 0 && closest.offset < 0);
+
+      if (shouldReplace) {
+        closest = {
+          ...occasion,
+          offset,
+          distance,
+        };
+      }
+    });
+  }
+
+  return closest;
+}
+
+function formatOccasionProximity(occasion) {
+  if (!occasion) {
+    return '';
+  }
+
+  if (occasion.offset === 0) {
+    return `Projected completion aligns with ${occasion.name}.`;
+  }
+
+  const dayDistance = Math.abs(occasion.offset);
+  const dayLabel = dayDistance === 1 ? 'day' : 'days';
+  const direction = occasion.offset > 0 ? 'after' : 'before';
+  return `Projected completion is ${dayDistance} ${dayLabel} ${direction} ${occasion.name}.`;
+}
+
 function readStoredActionLog() {
   try {
     const raw = localStorage.getItem(ACTION_LOG_STORAGE_KEY);
@@ -278,6 +364,16 @@ function readStoredDailyGoal() {
   }
 
   return '10-verses';
+}
+
+function readStoredDailyPageGoal() {
+  const raw = String(localStorage.getItem(DAILY_PAGE_GOAL_STORAGE_KEY) || '').trim();
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
 }
 
 function getFirstName(value) {
@@ -529,6 +625,11 @@ export default function App() {
   const [actionLog, setActionLog] = useState(() => readStoredActionLog());
   const [streak, setStreak] = useState(() => normalizeStreakForToday(readStoredStreak()));
   const [dailyGoal, setDailyGoal] = useState(() => readStoredDailyGoal());
+  const [dailyPageGoal, setDailyPageGoal] = useState(() => readStoredDailyPageGoal());
+  const [dailyPageGoalInput, setDailyPageGoalInput] = useState(() => {
+    const stored = readStoredDailyPageGoal();
+    return stored ? String(stored) : '';
+  });
   const [profileName, setProfileName] = useState(() => {
     const raw = localStorage.getItem('tilawah_profile_name');
     return raw === 'Sister' ? 'Sister' : 'Brother';
@@ -607,6 +708,7 @@ export default function App() {
   const [voiceMirrorAnimatedPercent, setVoiceMirrorAnimatedPercent] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('style');
+  const [readingStatsPeriod, setReadingStatsPeriod] = useState('day');
   const [readingProgress, setReadingProgress] = useState(0);
   const [readingHeaderHeight, setReadingHeaderHeight] = useState(0);
   const [readerTheme, setReaderTheme] = useState(() => {
@@ -641,13 +743,84 @@ export default function App() {
     () => Object.values(streak.activityLog || {}).reduce((sum, count) => sum + Number(count || 0), 0),
     [streak.activityLog]
   );
-  const selectedDailyGoal = DAILY_GOAL_OPTIONS.find((option) => option.id === dailyGoal) || DAILY_GOAL_OPTIONS[1];
-  const wirdProgress = Math.min(100, (todaysReadCount / selectedDailyGoal.targetVerses) * 100);
-  const isWirdComplete = wirdProgress >= 100;
+  const pagesReadToday = useMemo(() => todaysReadCount / VERSES_PER_PAGE, [todaysReadCount]);
+  const goalVerseTarget = Number.isFinite(Number(dailyPageGoal)) && Number(dailyPageGoal) > 0
+    ? Number(dailyPageGoal) * VERSES_PER_PAGE
+    : 0;
+  const hasDailyPageGoal = goalVerseTarget > 0;
+  const readingStatsVerses = useMemo(() => {
+    if (readingStatsPeriod === 'day') {
+      return todaysReadCount;
+    }
+
+    const dayCount = readingStatsPeriod === 'week' ? 7 : 30;
+    const todayDate = new Date(`${todayKey}T00:00:00`);
+    let total = 0;
+
+    for (let offset = 0; offset < dayCount; offset += 1) {
+      const cursor = new Date(todayDate);
+      cursor.setDate(todayDate.getDate() - offset);
+      const key = getDateKeyFromDate(cursor);
+      total += Number(streak.activityLog?.[key] || 0);
+    }
+
+    return total;
+  }, [readingStatsPeriod, streak.activityLog, todayKey, todaysReadCount]);
+  const readingStatsRows = useMemo(
+    () => [
+      { icon: '📖', label: 'Pages', value: (readingStatsVerses / VERSES_PER_PAGE).toFixed(1) },
+      { icon: '📜', label: 'Verses', value: String(readingStatsVerses) },
+      { icon: '🔤', label: 'Words', value: String(readingStatsVerses * 25) },
+      { icon: '🔡', label: 'Letters', value: String(readingStatsVerses * 120) },
+      { icon: '🕌', label: "Juz'", value: (readingStatsVerses / 300).toFixed(2) },
+    ],
+    [readingStatsVerses]
+  );
+  const wirdProgress = hasDailyPageGoal ? Math.min(100, (todaysReadCount / goalVerseTarget) * 100) : 0;
+  const isWirdComplete = hasDailyPageGoal && wirdProgress >= 100;
   const totalDaysRead = useMemo(
     () => Object.values(streak.activityLog || {}).filter((count) => Number(count) > 0).length,
     [streak.activityLog]
   );
+  const khatmProjection = useMemo(() => {
+    const activityEntries = Object.values(streak.activityLog || {})
+      .map((count) => Number(count || 0))
+      .filter((count) => Number.isFinite(count) && count > 0);
+
+    const activeDays = activityEntries.length;
+    const totalVersesRead = activityEntries.reduce((sum, count) => sum + count, 0);
+    const totalPagesRead = totalVersesRead / VERSES_PER_PAGE;
+    const remainingPages = Math.max(0, TOTAL_QURAN_PAGES - totalPagesRead);
+    const avgDailyPages = activeDays > 0 ? totalPagesRead / Math.max(activeDays, 1) : 0;
+    const daysToComplete = avgDailyPages > 0 ? Math.ceil(remainingPages / avgDailyPages) : null;
+
+    let projectedDate = null;
+    if (totalVersesRead > 0 && remainingPages > 0 && daysToComplete !== null) {
+      projectedDate = new Date(`${todayKey}T00:00:00`);
+      projectedDate.setDate(projectedDate.getDate() + daysToComplete);
+    }
+
+    const nearestOccasion = projectedDate ? getClosestIslamicOccasion(projectedDate) : null;
+
+    return {
+      activeDays,
+      totalVersesRead,
+      totalPagesRead,
+      remainingPages,
+      avgDailyPages,
+      daysToComplete,
+      projectedDate,
+      projectedDateLabel: projectedDate
+        ? projectedDate.toLocaleDateString('en-GB', {
+            weekday: 'short',
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '',
+      occasionMessage: formatOccasionProximity(nearestOccasion),
+    };
+  }, [streak.activityLog, todayKey]);
 
   async function fetchAuthSession() {
     try {
@@ -885,6 +1058,17 @@ export default function App() {
   function handleDailyGoalSelection(goalId) {
     setDailyGoal(goalId);
     postGoalToServer(goalId);
+  }
+
+  function handleSetDailyPageGoal() {
+    const parsed = Number.parseFloat(String(dailyPageGoalInput || '').trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return;
+    }
+
+    setDailyPageGoal(parsed);
+    setDailyPageGoalInput(String(parsed));
+    localStorage.setItem(DAILY_PAGE_GOAL_STORAGE_KEY, String(parsed));
   }
 
   async function postStreakToServer(nextStreakData) {
@@ -4301,45 +4485,125 @@ export default function App() {
               </article>
             </section>
 
-            <section className="wird-ring-section" aria-live="polite">
-              <h3>Daily Wird Goal</h3>
-              <div className="wird-ring-shell">
-                <svg viewBox="0 0 160 160" className="wird-ring-svg" aria-hidden="true">
-                  <circle className="wird-ring-track" cx="80" cy="80" r={ringRadius} />
-                  <circle
-                    className="wird-ring-value"
-                    cx="80"
-                    cy="80"
-                    r={ringRadius}
-                    style={{
-                      strokeDasharray: `${ringCircumference}`,
-                      strokeDashoffset: `${ringOffset}`,
-                    }}
-                  />
-                </svg>
-                <div className="wird-ring-center">{Math.round(wirdProgress)}%</div>
+            <section className="khatm-projector-card" aria-live="polite">
+              <div className="khatm-projector-header">
+                <h3>Khatm Completion Projector</h3>
+                {khatmProjection.activeDays > 0 ? (
+                  <span>
+                    {khatmProjection.activeDays} active day{khatmProjection.activeDays === 1 ? '' : 's'}
+                  </span>
+                ) : null}
               </div>
 
-              <p className="wird-ring-caption">
-                {todaysReadCount} / {selectedDailyGoal.targetVerses} verses read today
+              {khatmProjection.totalVersesRead <= 0 ? (
+                <p className="khatm-projector-primary">Start reading to see your completion projection.</p>
+              ) : khatmProjection.remainingPages <= 0 ? (
+                <p className="khatm-projector-primary">Masha'Allah, you've completed the Quran at this pace.</p>
+              ) : (
+                <>
+                  <p className="khatm-projector-primary">Projected completion: {khatmProjection.projectedDateLabel}</p>
+                  <p className="khatm-projector-detail">
+                    {khatmProjection.totalPagesRead.toFixed(1)} / {TOTAL_QURAN_PAGES.toFixed(1)} pages read
+                    {' · '}
+                    {khatmProjection.remainingPages.toFixed(1)} pages remaining
+                    {' · '}
+                    {khatmProjection.avgDailyPages.toFixed(1)} pages/day
+                  </p>
+                  {khatmProjection.occasionMessage ? (
+                    <p className="khatm-projector-occasion">{khatmProjection.occasionMessage}</p>
+                  ) : null}
+                </>
+              )}
+            </section>
+
+            <section className="wird-ring-section" aria-live="polite">
+              <h3>Daily Page Goal</h3>
+              <div className="daily-page-goal-controls">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={dailyPageGoalInput}
+                  onChange={(event) => setDailyPageGoalInput(event.target.value)}
+                  placeholder="Enter pages (e.g. 0.5, 1, 2, 5)"
+                />
+                <button type="button" onClick={handleSetDailyPageGoal}>
+                  Set Goal
+                </button>
+              </div>
+              <p className="daily-page-goal-current">
+                Goal: {hasDailyPageGoal ? `${dailyPageGoal} pages per day` : 'Set a page target'}
               </p>
 
-              <div className="profile-goal-pills" role="tablist" aria-label="Daily goal options">
-                {DAILY_GOAL_OPTIONS.map((option) => {
-                  const selected = option.id === dailyGoal;
-                  return (
+              <div className="wird-goal-content">
+                <div className="wird-wheel-column">
+                  <div className="wird-ring-shell">
+                    {hasDailyPageGoal ? (
+                      <>
+                        <svg viewBox="0 0 160 160" className="wird-ring-svg" aria-hidden="true">
+                          <circle className="wird-ring-track" cx="80" cy="80" r={ringRadius} />
+                          <circle
+                            className="wird-ring-value"
+                            cx="80"
+                            cy="80"
+                            r={ringRadius}
+                            style={{
+                              strokeDasharray: `${ringCircumference}`,
+                              strokeDashoffset: `${ringOffset}`,
+                            }}
+                          />
+                        </svg>
+                        <div className="wird-ring-center">{Math.round(wirdProgress)}%</div>
+                      </>
+                    ) : (
+                      <div className="wird-ring-empty">Set a page goal below to track your progress</div>
+                    )}
+                  </div>
+
+                  <p className="wird-ring-caption">
+                    {hasDailyPageGoal ? `${pagesReadToday.toFixed(1)} / ${dailyPageGoal} pages` : 'Set a page goal below to track your progress'}
+                  </p>
+                </div>
+
+                <aside className="reading-stats-card" aria-label="Reading statistics by period">
+                  <div className="reading-stats-toggle" role="tablist" aria-label="Reading stats period">
                     <button
-                      key={option.id}
                       type="button"
                       role="tab"
-                      aria-selected={selected}
-                      className={`profile-goal-pill ${selected ? 'active' : ''}`}
-                      onClick={() => handleDailyGoalSelection(option.id)}
+                      aria-selected={readingStatsPeriod === 'day'}
+                      className={readingStatsPeriod === 'day' ? 'active' : ''}
+                      onClick={() => setReadingStatsPeriod('day')}
                     >
-                      {option.label}
+                      Day
                     </button>
-                  );
-                })}
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={readingStatsPeriod === 'week'}
+                      className={readingStatsPeriod === 'week' ? 'active' : ''}
+                      onClick={() => setReadingStatsPeriod('week')}
+                    >
+                      Week
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={readingStatsPeriod === 'month'}
+                      className={readingStatsPeriod === 'month' ? 'active' : ''}
+                      onClick={() => setReadingStatsPeriod('month')}
+                    >
+                      Month
+                    </button>
+                  </div>
+
+                  <div className="reading-stats-list">
+                    {readingStatsRows.map((row) => (
+                      <div key={row.label} className="reading-stat-row">
+                        <span className="reading-stat-label">{row.icon} {row.label}</span>
+                        <strong className="reading-stat-value">{row.value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </aside>
               </div>
 
               {isWirdComplete ? <p className="wird-complete-banner">Wird complete! 🌙</p> : null}
@@ -5106,26 +5370,7 @@ export default function App() {
                   </select>
                 </label>
 
-                <div className="setting-row column">
-                  <span>Daily Goal</span>
-                  <div className="profile-goal-pills" role="tablist" aria-label="Daily goal options in settings">
-                    {DAILY_GOAL_OPTIONS.map((option) => {
-                      const selected = option.id === dailyGoal;
-                      return (
-                        <button
-                          key={option.id}
-                          type="button"
-                          role="tab"
-                          aria-selected={selected}
-                          className={`profile-goal-pill ${selected ? 'active' : ''}`}
-                          onClick={() => setDailyGoal(option.id)}
-                        >
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                <p className="settings-note-text">Daily progress is now controlled by the Daily Page Goal on the profile page.</p>
               </div>
             )}
           </section>

@@ -1933,13 +1933,57 @@ body {
   line-height: 1.05;
 }
 
+.khatm-projector-card {
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-card);
+  padding: 0.9rem 1rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.khatm-projector-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.khatm-projector-header h3 {
+  margin: 0;
+  color: var(--clr-173346);
+}
+
+.khatm-projector-header span {
+  font-size: 0.84rem;
+  color: var(--clr-4a616f);
+}
+
+.khatm-projector-primary {
+  margin: 0;
+  color: var(--clr-173346);
+  font-weight: 700;
+}
+
+.khatm-projector-detail {
+  margin: 0;
+  color: var(--clr-4a616f);
+  font-size: 0.9rem;
+}
+
+.khatm-projector-occasion {
+  margin: 0;
+  color: var(--clr-0f6f67);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
 .wird-ring-section {
   border: 1px solid var(--border-color);
   border-radius: 14px;
   background: var(--bg-card);
   padding: 1rem;
   display: grid;
-  justify-items: center;
   gap: 0.5rem;
 }
 
@@ -1954,6 +1998,21 @@ body {
   width: 170px;
   height: 170px;
   position: relative;
+}
+
+.wird-goal-content {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(190px, auto) minmax(260px, 1fr);
+  gap: 0.9rem;
+  align-items: stretch;
+}
+
+.wird-wheel-column {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 0.35rem;
 }
 
 .wird-ring-svg {
@@ -1988,10 +2047,122 @@ body {
   color: var(--clr-113348);
 }
 
+.wird-ring-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 0.85rem;
+  color: var(--clr-4a616f);
+  font-size: 0.86rem;
+  font-weight: 600;
+  border: 1px dashed var(--border-color);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-card));
+}
+
 .wird-ring-caption {
   margin: 0;
   color: var(--clr-3d5968);
   font-weight: 600;
+}
+
+.reading-stats-card {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-card);
+  padding: 0.7rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.reading-stats-toggle {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.reading-stats-toggle button {
+  border: 1px solid var(--clr-c7d2d9);
+  border-radius: 999px;
+  background: var(--clr-e6eaed);
+  color: var(--clr-234153);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.25rem 0.62rem;
+  cursor: pointer;
+}
+
+.reading-stats-toggle button.active {
+  border-color: var(--clr-0f6f67);
+  background: var(--clr-0f6f67);
+  color: var(--clr-ffffff);
+}
+
+.reading-stats-list {
+  display: grid;
+  gap: 0.42rem;
+}
+
+.reading-stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  padding-bottom: 0.28rem;
+}
+
+.reading-stat-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.reading-stat-label {
+  color: var(--clr-4a616f);
+  font-size: 0.88rem;
+}
+
+.reading-stat-value {
+  color: var(--clr-173346);
+  font-size: 0.95rem;
+}
+
+.daily-page-goal-controls {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.daily-page-goal-controls input {
+  flex: 1 1 190px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  padding: 0.5rem 0.65rem;
+}
+
+.daily-page-goal-controls button {
+  border: 1px solid var(--clr-0f6f67);
+  border-radius: 10px;
+  background: var(--clr-0f6f67);
+  color: var(--clr-ffffff);
+  font-weight: 700;
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+}
+
+.daily-page-goal-current {
+  margin: 0;
+  color: var(--clr-3f5664);
+  font-size: 0.92rem;
+}
+
+.settings-note-text {
+  margin: 0;
+  color: var(--clr-5b7281);
+  font-size: 0.9rem;
 }
 
 .profile-goal-pills {
@@ -1999,6 +2170,16 @@ body {
   flex-wrap: wrap;
   gap: 0.45rem;
   justify-content: center;
+}
+
+@media (max-width: 920px) {
+  .wird-goal-content {
+    grid-template-columns: 1fr;
+  }
+
+  .reading-stats-card {
+    width: 100%;
+  }
 }
 
 .profile-goal-pill {
