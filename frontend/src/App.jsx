@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import surahHooks from './forgottenSurahHooks';
 
 const COIN_STORAGE_KEY = 'tilawah_coins_total';
 const BOOKMARK_STORAGE_KEY = 'tilawah_bookmarks';
@@ -16,11 +17,27 @@ const AUDIO_PLAYBACK_RATE_STORAGE_KEY = 'tilawah_audio_playback_rate';
 const AUDIO_VOLUME_STORAGE_KEY = 'tilawah_audio_volume';
 const READER_THEME_STORAGE_KEY = 'tilawah_reader_theme';
 const USER_GROUP_CODE_STORAGE_KEY = 'userGroupCode';
+const ACCOUNT_PRIVACY_STORAGE_KEY = 'accountPrivacy';
+const SHARED_REFLECTIONS_STORAGE_KEY = 'sharedReflections';
+const GUEST_REFLECTION_ACTOR_ID_STORAGE_KEY = 'communityGuestId';
+const KHATMAH_PROGRESS_STORAGE_KEY = 'khatmahProgress';
+const KHATMAH_PROGRESS_VERSE_ID_STORAGE_KEY = 'khatmahProgressVerseId';
+const LIVING_QURAN_LOG_STORAGE_KEY = 'livingQuranLog';
+const KHATMAH_INTERVAL_STORAGE_KEY = 'khatmahInterval';
+const FORGOTTEN_SURAH_DATE_STORAGE_KEY = 'lastForgottenSurahDate';
+const FORGOTTEN_SURAH_ID_STORAGE_KEY = 'lastForgottenSurahId';
+const FORGOTTEN_SURAH_HOOK_STORAGE_KEY = 'lastForgottenSurahHook';
+const FORGOTTEN_SURAH_DISMISSED_DATE_STORAGE_KEY = 'forgottenSurahDismissedDate';
+const SURAH_READING_HISTORY_STORAGE_KEY = 'tilawah_surah_reading_history';
 const AUDIO_HOST = 'https://verses.quran.foundation';
 const READ_AWARD_DELAY_MS = 1500;
+const FORGOTTEN_SURAH_WINDOW_DAYS = 7;
+const FORGOTTEN_SURAH_LONG_GAP_DAYS = 30;
+const OVERLOOKED_SURAH_IDS = [38, 40, 41, 42, 43, 44, 45, 46, 29, 30, 31, 32, 34, 35, 36, 57, 58, 59, 64, 67, 68, 69, 70, 72, 76, 77, 78, 79];
 const GROUP_VOTE_OPTIONS = [5, 10, 20, 40, 80];
 const VERSES_PER_PAGE = 15;
 const TOTAL_QURAN_PAGES = 604;
+const TOTAL_QURAN_VERSES = 6236;
 
 const ISLAMIC_OCCASIONS = [
   { name: 'Ramadan', month: 9, day: 1 },
@@ -51,6 +68,13 @@ const DAILY_GOAL_OPTIONS = [
   { id: '1-rub', label: "1 Rub'", targetVerses: 60 },
   { id: '1-hizb', label: '1 Hizb', targetVerses: 120 },
   { id: '1-juz', label: '1 Juz', targetVerses: 300 },
+];
+
+const KHATMAH_INTERVAL_OPTIONS = [
+  { id: '5-verses', label: '5 verses', targetVerses: 5 },
+  { id: '10-verses', label: '10 verses', targetVerses: 10 },
+  { id: '20-verses', label: '20 verses', targetVerses: 20 },
+  { id: '1-page', label: '1 page (~15 verses)', targetVerses: 15 },
 ];
 
 function extractReciterName(reciter) {
@@ -376,6 +400,171 @@ function readStoredDailyPageGoal() {
   return parsed;
 }
 
+function readStoredAccountPrivacy() {
+  const value = String(localStorage.getItem(ACCOUNT_PRIVACY_STORAGE_KEY) || 'private').trim().toLowerCase();
+  return value === 'public' ? 'public' : 'private';
+}
+
+function readStoredSharedReflections() {
+  try {
+    const raw = localStorage.getItem(SHARED_REFLECTIONS_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function getOrCreateGuestReflectionActorId() {
+  const existing = String(localStorage.getItem(GUEST_REFLECTION_ACTOR_ID_STORAGE_KEY) || '').trim();
+  if (existing) {
+    return existing;
+  }
+
+  const generated =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `guest-${crypto.randomUUID()}`
+      : `guest-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+  localStorage.setItem(GUEST_REFLECTION_ACTOR_ID_STORAGE_KEY, generated);
+  return generated;
+}
+
+function getReflectionShareKey(entry) {
+  return `${String(entry?.verseKey || '').trim()}|${String(entry?.date || '').trim()}`;
+}
+
+function readStoredKhatmahProgress() {
+  const key = String(localStorage.getItem(KHATMAH_PROGRESS_STORAGE_KEY) || '').trim();
+  const verseId = Number.parseInt(String(localStorage.getItem(KHATMAH_PROGRESS_VERSE_ID_STORAGE_KEY) || ''), 10);
+  return {
+    verseKey: key || '1:1',
+    verseId: Number.isFinite(verseId) && verseId > 0 ? verseId : null,
+  };
+}
+
+function readStoredLivingQuranLog() {
+  try {
+    const raw = localStorage.getItem(LIVING_QURAN_LOG_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((item) => item && typeof item === 'object');
+  } catch {
+    return [];
+  }
+}
+
+function readStoredKhatmahInterval() {
+  const raw = String(localStorage.getItem(KHATMAH_INTERVAL_STORAGE_KEY) || '').trim();
+  if (KHATMAH_INTERVAL_OPTIONS.some((option) => option.id === raw)) {
+    return raw;
+  }
+
+  return '10-verses';
+}
+
+function readStoredSurahReadingHistory() {
+  try {
+    const raw = localStorage.getItem(SURAH_READING_HISTORY_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.entries(parsed).reduce((acc, [key, value]) => {
+      const surahId = Number.parseInt(String(key || ''), 10);
+      if (!Number.isFinite(surahId) || surahId <= 0 || surahId > 114 || !value || typeof value !== 'object') {
+        return acc;
+      }
+
+      const sessions = Number.parseInt(String(value.sessions || 0), 10);
+      const lastReadDate = String(value.lastReadDate || '').trim();
+      const lastSessionDate = String(value.lastSessionDate || '').trim();
+
+      acc[surahId] = {
+        sessions: Number.isFinite(sessions) && sessions > 0 ? sessions : 0,
+        lastReadDate,
+        lastSessionDate,
+      };
+      return acc;
+    }, {});
+  } catch {
+    return {};
+  }
+}
+
+function getDaysBetweenDateKeys(startDateKey, endDateKey) {
+  const start = new Date(`${String(startDateKey || '').trim()}T00:00:00`);
+  const end = new Date(`${String(endDateKey || '').trim()}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  return Math.max(0, Math.floor((end.getTime() - start.getTime()) / dayMs));
+}
+
+function recordSurahReadingSession(history, surahId, dateKey) {
+  const normalizedSurahId = Number.parseInt(String(surahId || ''), 10);
+  if (!Number.isFinite(normalizedSurahId) || normalizedSurahId <= 0) {
+    return history;
+  }
+
+  const current = history?.[normalizedSurahId] || { sessions: 0, lastReadDate: '', lastSessionDate: '' };
+  const sameSessionDay = current.lastSessionDate === dateKey;
+  const nextSessions = sameSessionDay ? Number(current.sessions || 0) : Number(current.sessions || 0) + 1;
+
+  return {
+    ...(history || {}),
+    [normalizedSurahId]: {
+      sessions: Math.max(0, nextSessions),
+      lastReadDate: dateKey,
+      lastSessionDate: dateKey,
+    },
+  };
+}
+
+function formatStaleReadDuration(daysSinceLastRead) {
+  const normalizedDays = Number.isFinite(daysSinceLastRead) ? Math.max(0, Math.floor(daysSinceLastRead)) : 0;
+  if (normalizedDays >= 60) {
+    const months = Math.round(normalizedDays / 30);
+    return `${months} month${months === 1 ? '' : 's'}`;
+  }
+
+  return `${normalizedDays} day${normalizedDays === 1 ? '' : 's'}`;
+}
+
+function parseVerseKeyParts(verseKey) {
+  const [surahRaw, ayahRaw] = String(verseKey || '').split(':');
+  const surah = Number.parseInt(surahRaw || '', 10);
+  const ayah = Number.parseInt(ayahRaw || '', 10);
+  return {
+    surah: Number.isFinite(surah) ? surah : 0,
+    ayah: Number.isFinite(ayah) ? ayah : 0,
+  };
+}
+
+function toArabicIndicNumber(value) {
+  const normalized = Math.max(0, Number.parseInt(String(value || '0'), 10) || 0);
+  return String(normalized).replace(/\d/g, (digit) => String.fromCharCode(0x0660 + Number(digit)));
+}
+
+function buildKhatmahVerseEnding(verse) {
+  const directNumber = Number.parseInt(String(verse?.verse_number || ''), 10);
+  if (Number.isFinite(directNumber) && directNumber > 0) {
+    return `۝${toArabicIndicNumber(directNumber)}`;
+  }
+
+  const keyParts = parseVerseKeyParts(String(verse?.verse_key || ''));
+  return `۝${toArabicIndicNumber(keyParts.ayah || 0)}`;
+}
+
 function getFirstName(value) {
   const trimmed = String(value || '').trim();
   if (!trimmed) {
@@ -447,6 +636,98 @@ function buildAudioMap(audioFiles) {
   return map;
 }
 
+function normalizeWordTimingIndex(rawIndex, fallbackIndex) {
+  const parsed = Number.parseInt(String(rawIndex), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallbackIndex;
+  }
+
+  if (parsed <= 0) {
+    return 0;
+  }
+
+  // Quran API word indexes are usually 1-based.
+  return parsed - 1;
+}
+
+function extractWordTimingsFromAudioFile(audioFile) {
+  const rows = [];
+
+  const pushTiming = (rawStart, rawEnd, rawIndex, fallbackIndex) => {
+    const startMs = Number(rawStart);
+    const endMs = Number(rawEnd);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs < 0 || endMs < startMs) {
+      return;
+    }
+
+    rows.push({
+      startMs,
+      endMs,
+      wordIndex: normalizeWordTimingIndex(rawIndex, fallbackIndex),
+    });
+  };
+
+  const words = Array.isArray(audioFile?.words) ? audioFile.words : [];
+  if (words.length) {
+    words.forEach((word, index) => {
+      pushTiming(word?.start_time, word?.end_time, word?.position ?? word?.word_index ?? word?.index, index);
+    });
+  }
+
+  if (!rows.length) {
+    const timestamps = Array.isArray(audioFile?.timestamps) ? audioFile.timestamps : [];
+    timestamps.forEach((entry, index) => {
+      if (Array.isArray(entry)) {
+        pushTiming(entry[0], entry[1], entry[2] ?? index, index);
+        return;
+      }
+
+      pushTiming(
+        entry?.start_time ?? entry?.start,
+        entry?.end_time ?? entry?.end,
+        entry?.position ?? entry?.word_index ?? entry?.index,
+        index
+      );
+    });
+  }
+
+  if (!rows.length) {
+    const segments = Array.isArray(audioFile?.segments) ? audioFile.segments : [];
+    segments.forEach((entry, index) => {
+      if (Array.isArray(entry)) {
+        pushTiming(entry[0], entry[1], entry[2] ?? index, index);
+        return;
+      }
+
+      pushTiming(
+        entry?.start_time ?? entry?.start,
+        entry?.end_time ?? entry?.end,
+        entry?.position ?? entry?.word_index ?? entry?.index,
+        index
+      );
+    });
+  }
+
+  return rows.sort((a, b) => a.startMs - b.startMs);
+}
+
+function buildWordTimingMap(audioFiles) {
+  const map = {};
+  (Array.isArray(audioFiles) ? audioFiles : []).forEach((file) => {
+    const verseKey = String(file?.verse_key || '').trim();
+    if (!verseKey) {
+      return;
+    }
+
+    const rows = extractWordTimingsFromAudioFile(file);
+    if (rows.length) {
+      map[verseKey] = rows;
+    }
+  });
+
+  return map;
+}
+
 function buildInteractiveWords(verse) {
   const fullTextWords = String(verse.text_uthmani || '')
     .trim()
@@ -463,6 +744,8 @@ function buildInteractiveWords(verse) {
       id: meta.id || index,
       position: meta.position || index + 1,
       text_uthmani: text,
+      root: String(meta.root || meta.lemma?.text || meta.lemma || meta.stem || '').trim(),
+      transliteration: String(meta.transliteration?.text || meta.transliteration || '').trim(),
       audio_url: meta.audio_url || meta.audio?.url || '',
       translation_text:
         meta.translation_text ||
@@ -473,7 +756,56 @@ function buildInteractiveWords(verse) {
   });
 }
 
-function findClosestWordIndexByCenter(container, clientX, clientY) {
+function formatWordRootDisplay(rootValue) {
+  const compact = String(rootValue || '')
+    .replace(/[\s-]+/g, '')
+    .trim();
+
+  if (!compact) {
+    return '';
+  }
+
+  return compact.split('').join('-');
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractAlternativeTerms(text) {
+  const source = String(text || '');
+  if (!source) {
+    return [];
+  }
+
+  const termSet = new Set();
+  const quotedMatches = source.match(/["'“”]([^"'“”]{1,30})["'“”]/g) || [];
+  quotedMatches.forEach((match) => {
+    const term = match.replace(/["'“”]/g, '').trim();
+    if (term) {
+      termSet.add(term);
+    }
+  });
+
+  const patterns = [
+    /instead of\s+([A-Za-z\u0600-\u06FF\-]+)/gi,
+    /allah chose\s+([A-Za-z\u0600-\u06FF\-]+)/gi,
+  ];
+  patterns.forEach((pattern) => {
+    let match = pattern.exec(source);
+    while (match) {
+      const term = String(match[1] || '').trim();
+      if (term) {
+        termSet.add(term);
+      }
+      match = pattern.exec(source);
+    }
+  });
+
+  return Array.from(termSet).sort((a, b) => b.length - a.length);
+}
+
+function findClosestWordIndexByCenter(container, clientX, clientY, maxDistance = 60) {
   const wordSpans = Array.from(container.querySelectorAll('.arabic-word-segment'));
   if (!wordSpans.length) {
     return -1;
@@ -500,6 +832,10 @@ function findClosestWordIndexByCenter(container, clientX, clientY) {
       closestDistance = distance;
     }
   });
+
+  if (closestDistance > maxDistance) {
+    return -1;
+  }
 
   return closestWordIndex;
 }
@@ -599,6 +935,8 @@ export default function App() {
   const voiceMirrorAudioContextRef = useRef(null);
   const voiceMirrorAnimationFrameRef = useRef(0);
   const audioBarMenuRef = useRef(null);
+  const userMenuRef = useRef(null);
+  const wordHighlightIntervalRef = useRef(null);
   const nextAudioPrefetchRef = useRef(null);
   const lastPrefetchSourceVerseIdRef = useRef('');
   const verseRefs = useRef(new Map());
@@ -606,18 +944,26 @@ export default function App() {
   const readingHeaderRef = useRef(null);
   const activeCenteredVerseIdRef = useRef('');
   const activeReadTimerRef = useRef(null);
+  const verseGlowTimerRef = useRef(null);
   const actionLogRef = useRef(readStoredActionLog());
   const streakRef = useRef(normalizeStreakForToday(readStoredStreak()));
   const authSessionRef = useRef({ loggedIn: false, user: null, accessToken: '' });
   const dailyCoinsRef = useRef(readStoredDailyCoins());
   const lifetimeCoinsRef = useRef(readStoredLifetimeCoins());
+  const khatmahObserverRef = useRef(null);
+  const khatmahVisibleTimersRef = useRef(new Map());
+  const khatmahReadVerseKeysRef = useRef(new Set());
+  const khatmahCheckpointReadIndicesRef = useRef(new Set());
+  const khatmahGateTriggeringRef = useRef(false);
   const [chapters, setChapters] = useState([]);
   const [chapterSearch, setChapterSearch] = useState('');
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [verses, setVerses] = useState([]);
   const [expandedTafsir, setExpandedTafsir] = useState({});
+  const [liveThisByVerse, setLiveThisByVerse] = useState({});
   const [tafsirByChapter, setTafsirByChapter] = useState({});
   const [audioByChapter, setAudioByChapter] = useState({});
+  const [wordTimingsByChapter, setWordTimingsByChapter] = useState({});
   const [coins, setCoins] = useState(() => readStoredCoins());
   const [bookmarks, setBookmarks] = useState(() => readStoredBookmarks());
   const [bookmarkDetails, setBookmarkDetails] = useState(() => readStoredBookmarkDetails());
@@ -636,8 +982,15 @@ export default function App() {
   });
   const [dailyCoins, setDailyCoins] = useState(() => readStoredDailyCoins());
   const [lifetimeCoins, setLifetimeCoins] = useState(() => readStoredLifetimeCoins());
+  const [surahReadingHistory, setSurahReadingHistory] = useState(() => readStoredSurahReadingHistory());
+  const [forgottenSurah, setForgottenSurah] = useState(null);
+  const [isForgottenSurahLoading, setIsForgottenSurahLoading] = useState(false);
+  const [forgottenSurahDismissedDate, setForgottenSurahDismissedDate] = useState(() =>
+    String(localStorage.getItem(FORGOTTEN_SURAH_DISMISSED_DATE_STORAGE_KEY) || '').trim()
+  );
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [activePage, setActivePage] = useState('reader');
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [profileTab, setProfileTab] = useState('stats');
   const [isFullJournalOpen, setIsFullJournalOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState('surahs');
@@ -676,8 +1029,45 @@ export default function App() {
   const [centeredVerseId, setCenteredVerseId] = useState('');
   const [isAudioBarVisible, setIsAudioBarVisible] = useState(false);
   const [wordTooltip, setWordTooltip] = useState(null);
+  const [unsealedWordPanel, setUnsealedWordPanel] = useState(null);
   const [hoveredWord, setHoveredWord] = useState(null);
+  const [activeAudioWord, setActiveAudioWord] = useState(null);
+  const [glowingVerseId, setGlowingVerseId] = useState('');
+  const [hoveredOrnamentVerseId, setHoveredOrnamentVerseId] = useState('');
+  const [ornamentVersePreview, setOrnamentVersePreview] = useState(null);
   const [reflectionModal, setReflectionModal] = useState(null);
+  const [journalViewTab, setJournalViewTab] = useState('mine');
+  const [accountPrivacy, setAccountPrivacy] = useState(() => readStoredAccountPrivacy());
+  const [sharedReflections, setSharedReflections] = useState(() => readStoredSharedReflections());
+  const [isSharingReflection, setIsSharingReflection] = useState(false);
+  const [reflectionShareNotice, setReflectionShareNotice] = useState('');
+  const [communityReflections, setCommunityReflections] = useState([]);
+  const [isCommunityLoading, setIsCommunityLoading] = useState(false);
+  const [communityFeedError, setCommunityFeedError] = useState('');
+  const [expandedCommunityItems, setExpandedCommunityItems] = useState({});
+  const [khatmahProgressState, setKhatmahProgressState] = useState(() => readStoredKhatmahProgress());
+  const [khatmahInterval, setKhatmahInterval] = useState(() => readStoredKhatmahInterval());
+  const [livingQuranLog, setLivingQuranLog] = useState(() => readStoredLivingQuranLog());
+  const [khatmahSurahId, setKhatmahSurahId] = useState(null);
+  const [khatmahVerses, setKhatmahVerses] = useState([]);
+  const [isKhatmahLoading, setIsKhatmahLoading] = useState(false);
+  const [khatmahError, setKhatmahError] = useState('');
+  const [khatmahBlockStartIndex, setKhatmahBlockStartIndex] = useState(0);
+  const [khatmahGateEndIndex, setKhatmahGateEndIndex] = useState(-1);
+  const [versesSinceLastCheckpoint, setVersesSinceLastCheckpoint] = useState(0);
+  const [khatmahWindowStartIndex, setKhatmahWindowStartIndex] = useState(0);
+  const [khatmahCurrentReadIndex, setKhatmahCurrentReadIndex] = useState(-1);
+  const [khatmahTransition, setKhatmahTransition] = useState(null);
+  const [khatmahGate, setKhatmahGate] = useState({
+    open: false,
+    verseRange: '',
+    verses: [],
+    loading: false,
+    theme: '',
+    challenges: [],
+    acceptedIndexes: [],
+    error: '',
+  });
   const [isCompanionOpen, setIsCompanionOpen] = useState(false);
   const [companionMessages, setCompanionMessages] = useState([]);
   const [companionInput, setCompanionInput] = useState('');
@@ -727,6 +1117,12 @@ export default function App() {
   const [authSession, setAuthSession] = useState({ checked: false, loggedIn: false, accessToken: '', user: null });
   const [serverStreak, setServerStreak] = useState(null);
   const [entryMode, setEntryMode] = useState('');
+
+  useEffect(() => {
+    localStorage.removeItem('lastForgottenSurahHook');
+    localStorage.removeItem('lastForgottenSurahDate');
+    localStorage.removeItem('lastForgottenSurahId');
+  }, []);
 
   const todayKey = getTodayKey();
   const todaysActions = useMemo(() => {
@@ -821,6 +1217,41 @@ export default function App() {
       occasionMessage: formatOccasionProximity(nearestOccasion),
     };
   }, [streak.activityLog, todayKey]);
+  const lastGlobalReadDateKey = useMemo(() => {
+    return Object.entries(streak.activityLog || {}).reduce((latestKey, [dateKey, count]) => {
+      if (Number(count || 0) <= 0) {
+        return latestKey;
+      }
+
+      if (!latestKey) {
+        return dateKey;
+      }
+
+      return dateKey > latestKey ? dateKey : latestKey;
+    }, '');
+  }, [streak.activityLog]);
+  const quranMapSquares = useMemo(() => {
+    return Array.from({ length: 114 }, (_, index) => {
+      const surahId = index + 1;
+      const history = surahReadingHistory?.[surahId];
+      const sessions = Number(history?.sessions || 0);
+      const lastReadDate = String(history?.lastReadDate || '').trim();
+
+      if (sessions <= 0 || !lastReadDate) {
+        return { surahId, level: 'never' };
+      }
+
+      const daysSince = getDaysBetweenDateKeys(lastReadDate, todayKey);
+      return { surahId, level: daysSince <= FORGOTTEN_SURAH_LONG_GAP_DAYS ? 'recent' : 'stale' };
+    });
+  }, [surahReadingHistory, todayKey]);
+  const quranMapReadCount = useMemo(
+    () => quranMapSquares.filter((item) => item.level !== 'never').length,
+    [quranMapSquares]
+  );
+  const isForgottenSurahDismissedToday = forgottenSurahDismissedDate === todayKey;
+  const shouldShowForgottenSurahCard = !isForgottenSurahDismissedToday && (isForgottenSurahLoading || Boolean(forgottenSurah));
+  const hasForgottenSurahSignal = Boolean(forgottenSurah?.surahNumber) && !isForgottenSurahDismissedToday;
 
   async function fetchAuthSession() {
     try {
@@ -1453,6 +1884,7 @@ export default function App() {
 
   const currentSurahForCompanion = selectedChapter?.name_simple || 'the Quran';
   const currentVerseForCompanion = centeredVerseData?.verse_key || '';
+  const currentArabicTextForCompanion = String(centeredVerseData?.text_uthmani || '').trim();
   const currentTranslationForCompanion = stripHtmlTags(
     centeredVerseData?.translations?.[0]?.text ||
       centeredVerseData?.translations?.[0]?.translation ||
@@ -1504,11 +1936,15 @@ export default function App() {
     let isCancelled = false;
 
     async function loadReciters() {
-      const perPage = 50;
+      const perPage = 100;
       const allReciters = [];
+      const seenIds = new Set();
 
       try {
-        for (let page = 1; page <= 20; page += 1) {
+        let page = 1;
+        let totalPages = 1;
+
+        while (page <= totalPages) {
           const response = await fetch(`/api/quran/resources/recitations?language=en&per_page=${perPage}&page=${page}`);
           const payload = await response.json();
 
@@ -1517,9 +1953,25 @@ export default function App() {
           }
 
           const pageReciters = parseReciterOptions(payload);
-          allReciters.push(...pageReciters);
+          pageReciters.forEach((option) => {
+            if (!seenIds.has(option.id)) {
+              seenIds.add(option.id);
+              allReciters.push(option);
+            }
+          });
 
-          if (pageReciters.length < perPage) {
+          const paginationTotal = Number.parseInt(String(payload?.pagination?.total_pages || ''), 10);
+          if (Number.isFinite(paginationTotal) && paginationTotal > 0) {
+            totalPages = paginationTotal;
+          } else if (pageReciters.length < perPage) {
+            totalPages = page;
+          } else {
+            totalPages = Math.max(totalPages, page + 1);
+          }
+
+          page += 1;
+
+          if (page > 40) {
             break;
           }
         }
@@ -1528,7 +1980,12 @@ export default function App() {
           const response = await fetch('/api/quran/resources/recitations?language=en');
           const payload = await response.json();
           if (response.ok) {
-            allReciters.push(...parseReciterOptions(payload));
+            parseReciterOptions(payload).forEach((option) => {
+              if (!seenIds.has(option.id)) {
+                seenIds.add(option.id);
+                allReciters.push(option);
+              }
+            });
           }
         } catch {
           // Keep defaults if the API is unavailable.
@@ -1621,6 +2078,7 @@ export default function App() {
       setVerses([]);
       setCenteredVerseId('');
       setExpandedTafsir({});
+      setLiveThisByVerse({});
       setAudioProgress(0);
       setCurrentAudio(null);
       setIsAudioBarVisible(false);
@@ -1806,6 +2264,54 @@ export default function App() {
   }, [profileName]);
 
   useEffect(() => {
+    localStorage.setItem(ACCOUNT_PRIVACY_STORAGE_KEY, accountPrivacy);
+  }, [accountPrivacy]);
+
+  useEffect(() => {
+    localStorage.setItem(SHARED_REFLECTIONS_STORAGE_KEY, JSON.stringify(Array.from(new Set(sharedReflections))));
+  }, [sharedReflections]);
+
+  useEffect(() => {
+    localStorage.setItem(KHATMAH_PROGRESS_STORAGE_KEY, String(khatmahProgressState.verseKey || '1:1'));
+    if (Number.isFinite(Number(khatmahProgressState.verseId || 0)) && Number(khatmahProgressState.verseId || 0) > 0) {
+      localStorage.setItem(KHATMAH_PROGRESS_VERSE_ID_STORAGE_KEY, String(khatmahProgressState.verseId));
+    }
+  }, [khatmahProgressState]);
+
+  useEffect(() => {
+    localStorage.setItem(LIVING_QURAN_LOG_STORAGE_KEY, JSON.stringify(livingQuranLog));
+  }, [livingQuranLog]);
+
+  useEffect(() => {
+    localStorage.setItem(KHATMAH_INTERVAL_STORAGE_KEY, khatmahInterval);
+  }, [khatmahInterval]);
+
+  useEffect(() => {
+    if (!reflectionModal) {
+      setReflectionShareNotice('');
+      setJournalViewTab('mine');
+    }
+  }, [reflectionModal]);
+
+  useEffect(() => {
+    setIsUserMenuOpen(false);
+  }, [activePage]);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (!userMenuRef.current) {
+        return;
+      }
+      if (!userMenuRef.current.contains(event.target)) {
+        setIsUserMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, []);
+
+  useEffect(() => {
     if (activePage !== 'profile') {
       setHeatmapTooltip(null);
     }
@@ -1826,6 +2332,8 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(RECITER_ID_STORAGE_KEY, String(selectedReciterId));
     setAudioByChapter({});
+    setWordTimingsByChapter({});
+    setActiveAudioWord(null);
 
     if (!currentAudio?.verseId || !selectedChapter?.id) {
       return;
@@ -1969,11 +2477,91 @@ export default function App() {
         activeReadTimerRef.current = null;
       }
 
+      if (verseGlowTimerRef.current) {
+        clearTimeout(verseGlowTimerRef.current);
+        verseGlowTimerRef.current = null;
+      }
+
       if (wordAudioRef.current) {
         wordAudioRef.current.pause();
       }
+
+      if (wordHighlightIntervalRef.current) {
+        clearInterval(wordHighlightIntervalRef.current);
+        wordHighlightIntervalRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAudioPlaying || !currentAudio?.verseKey) {
+      if (wordHighlightIntervalRef.current) {
+        clearInterval(wordHighlightIntervalRef.current);
+        wordHighlightIntervalRef.current = null;
+      }
+      setActiveAudioWord(null);
+      return;
+    }
+
+    const chapterId = Number(currentAudio?.chapterId || selectedChapter?.id || 0);
+    const cacheKey = `${selectedReciterId}:${chapterId}`;
+    const verseTimings = wordTimingsByChapter?.[cacheKey]?.[String(currentAudio.verseKey || '')] || [];
+    if (!verseTimings.length) {
+      setActiveAudioWord(null);
+      return;
+    }
+
+    const audioEl = audioRef.current;
+    if (!audioEl) {
+      return;
+    }
+
+    const verseId = String(currentAudio.verseId || '');
+    const tick = () => {
+      if (!audioEl || audioEl.paused || audioEl.ended) {
+        setActiveAudioWord(null);
+        return;
+      }
+
+      const currentTimeMs = Math.max(0, Math.floor(audioEl.currentTime * 1000));
+      const activeTiming = verseTimings.find((timing) => currentTimeMs >= timing.startMs && currentTimeMs <= timing.endMs);
+
+      if (!activeTiming) {
+        setActiveAudioWord((current) => (current ? null : current));
+        return;
+      }
+
+      const nextWord = {
+        verseId,
+        wordIndex: Number(activeTiming.wordIndex || 0),
+      };
+
+      setActiveAudioWord((current) => {
+        if (current?.verseId === nextWord.verseId && current?.wordIndex === nextWord.wordIndex) {
+          return current;
+        }
+        return nextWord;
+      });
+    };
+
+    tick();
+    wordHighlightIntervalRef.current = window.setInterval(tick, 50);
+
+    return () => {
+      if (wordHighlightIntervalRef.current) {
+        clearInterval(wordHighlightIntervalRef.current);
+        wordHighlightIntervalRef.current = null;
+      }
+    };
+  }, [
+    isAudioPlaying,
+    currentAudio?.verseId,
+    currentAudio?.verseKey,
+    currentAudio?.chapterId,
+    selectedChapter?.id,
+    selectedReciterId,
+    wordTimingsByChapter,
+  ]);
 
   useEffect(() => {
     function handleOutsideWordClick(event) {
@@ -2007,6 +2595,152 @@ export default function App() {
       return english.includes(query) || arabic.includes(query);
     });
   }, [chapterSearch, chapters]);
+
+  function getForgottenSurahHookText(surahNumber) {
+    const normalizedSurahNumber = Number.parseInt(String(surahNumber || ''), 10);
+    const hook = String(surahHooks?.[normalizedSurahNumber] || '').trim();
+    if (hook) {
+      return hook;
+    }
+
+    return 'This surah carries one of the Quran\'s most specific historical and spiritual lessons, and reading it fully can change how you understand revelation.';
+  }
+
+  async function resolveForgottenSurahForWeek() {
+    const todayDateKey = getTodayKey();
+    const storedDate = String(localStorage.getItem(FORGOTTEN_SURAH_DATE_STORAGE_KEY) || '').trim();
+    const storedId = Number.parseInt(String(localStorage.getItem(FORGOTTEN_SURAH_ID_STORAGE_KEY) || ''), 10);
+    const storedHook = String(localStorage.getItem(FORGOTTEN_SURAH_HOOK_STORAGE_KEY) || '').trim();
+    const hasStoredSurah = Number.isFinite(storedId) && storedId > 0;
+    const daysSinceStored = storedDate ? getDaysBetweenDateKeys(storedDate, todayDateKey) : Number.POSITIVE_INFINITY;
+    const shouldRotate = !hasStoredSurah || !storedDate || daysSinceStored >= FORGOTTEN_SURAH_WINDOW_DAYS;
+
+    const journalSurahSet = new Set(
+      journalEntries
+        .map((entry) => Number.parseInt(String(entry?.verseKey || '').split(':')[0] || '', 10))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    );
+    const bookmarkSurahSet = new Set(
+      Object.values(bookmarkDetails || {})
+        .map((detail) => Number.parseInt(String(detail?.chapterId || ''), 10))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    );
+
+    const buildCandidate = (chapter) => {
+      const chapterId = Number(chapter?.id || 0);
+      if (!chapterId) {
+        return null;
+      }
+
+      const history = surahReadingHistory?.[chapterId] || null;
+      const directSessions = Number(history?.sessions || 0);
+      const inferredSessions = journalSurahSet.has(chapterId) || bookmarkSurahSet.has(chapterId) ? 1 : 0;
+      const totalSessions = Math.max(directSessions, inferredSessions);
+      const lastReadDate = String(history?.lastReadDate || '').trim() || (totalSessions > 0 ? lastGlobalReadDateKey : '');
+      const daysSinceLastRead = lastReadDate ? getDaysBetweenDateKeys(lastReadDate, todayDateKey) : Number.POSITIVE_INFINITY;
+      const neverRead = totalSessions === 0;
+
+      if (neverRead) {
+        return {
+          surahNumber: chapterId,
+          surahName: String(chapter?.name_simple || `Surah ${chapterId}`),
+          surahNameArabic: String(chapter?.name_arabic || ''),
+          tier: 1,
+          neverRead: true,
+          daysSinceLastRead: 0,
+          tierMessage: 'You have never read this surah',
+        };
+      }
+
+      if (daysSinceLastRead > FORGOTTEN_SURAH_LONG_GAP_DAYS && totalSessions < 2) {
+        return {
+          surahNumber: chapterId,
+          surahName: String(chapter?.name_simple || `Surah ${chapterId}`),
+          surahNameArabic: String(chapter?.name_arabic || ''),
+          tier: 2,
+          neverRead: false,
+          daysSinceLastRead,
+          tierMessage: `You haven't read this in ${formatStaleReadDuration(daysSinceLastRead)}`,
+        };
+      }
+
+      if (OVERLOOKED_SURAH_IDS.includes(chapterId)) {
+        return {
+          surahNumber: chapterId,
+          surahName: String(chapter?.name_simple || `Surah ${chapterId}`),
+          surahNameArabic: String(chapter?.name_arabic || ''),
+          tier: 3,
+          neverRead: false,
+          daysSinceLastRead: Number.isFinite(daysSinceLastRead) ? daysSinceLastRead : 0,
+          tierMessage: 'One of the most overlooked surahs in the Quran',
+        };
+      }
+
+      return null;
+    };
+
+    const candidates = chapters.map(buildCandidate).filter(Boolean);
+    const candidateBySurahId = new Map(candidates.map((item) => [item.surahNumber, item]));
+
+    let chosenCandidate = null;
+    if (!shouldRotate && hasStoredSurah) {
+      chosenCandidate = candidateBySurahId.get(storedId) || {
+        surahNumber: storedId,
+        surahName: String(chapters.find((chapter) => Number(chapter?.id || 0) === storedId)?.name_simple || `Surah ${storedId}`),
+        surahNameArabic: String(chapters.find((chapter) => Number(chapter?.id || 0) === storedId)?.name_arabic || ''),
+        tier: 3,
+        neverRead: false,
+        daysSinceLastRead: 0,
+        tierMessage: 'One of the most overlooked surahs in the Quran',
+      };
+    } else {
+      const tierBuckets = [1, 2, 3].map((tier) => candidates.filter((candidate) => candidate.tier === tier));
+      const firstNonEmptyTier = tierBuckets.find((bucket) => bucket.length > 0) || [];
+      const previousSurahId = hasStoredSurah ? storedId : null;
+      const pool =
+        previousSurahId && firstNonEmptyTier.length > 1
+          ? firstNonEmptyTier.filter((candidate) => candidate.surahNumber !== previousSurahId)
+          : firstNonEmptyTier;
+      const randomPool = pool.length ? pool : firstNonEmptyTier;
+
+      if (randomPool.length > 0) {
+        chosenCandidate = randomPool[Math.floor(Math.random() * randomPool.length)];
+      } else if (chapters.length > 0) {
+        const fallbackChapter = chapters[0];
+        chosenCandidate = {
+          surahNumber: Number(fallbackChapter.id || 1),
+          surahName: String(fallbackChapter.name_simple || 'Al-Fatihah'),
+          surahNameArabic: String(fallbackChapter.name_arabic || ''),
+          tier: 3,
+          neverRead: false,
+          daysSinceLastRead: 0,
+          tierMessage: 'One of the most overlooked surahs in the Quran',
+        };
+      }
+
+      if (chosenCandidate) {
+        localStorage.setItem(FORGOTTEN_SURAH_ID_STORAGE_KEY, String(chosenCandidate.surahNumber));
+        localStorage.setItem(FORGOTTEN_SURAH_DATE_STORAGE_KEY, todayDateKey);
+        localStorage.removeItem(FORGOTTEN_SURAH_HOOK_STORAGE_KEY);
+      }
+    }
+
+    if (!chosenCandidate) {
+      return null;
+    }
+
+    let hook = storedHook;
+    const selectedIsStored = hasStoredSurah && storedId === chosenCandidate.surahNumber;
+    if (!selectedIsStored || shouldRotate || !hook) {
+      hook = getForgottenSurahHookText(chosenCandidate.surahNumber);
+      localStorage.setItem(FORGOTTEN_SURAH_HOOK_STORAGE_KEY, hook);
+    }
+
+    return {
+      ...chosenCandidate,
+      hook,
+    };
+  }
 
   const bookmarkItems = useMemo(() => {
     const parseVerseNumber = (verseKey) => {
@@ -2045,6 +2779,62 @@ export default function App() {
       });
   }, [bookmarks, bookmarkDetails]);
 
+  useEffect(() => {
+    localStorage.setItem(SURAH_READING_HISTORY_STORAGE_KEY, JSON.stringify(surahReadingHistory));
+  }, [surahReadingHistory]);
+
+  useEffect(() => {
+    const currentSurahId = Number(selectedChapter?.id || 0);
+    if (!currentSurahId) {
+      return;
+    }
+
+    setSurahReadingHistory((current) => recordSurahReadingSession(current, currentSurahId, getTodayKey()));
+  }, [selectedChapter?.id]);
+
+  useEffect(() => {
+    if (!chapters.length) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function loadForgottenSurah() {
+      if (!isCancelled) {
+        setIsForgottenSurahLoading(true);
+      }
+
+      try {
+        const resolved = await resolveForgottenSurahForWeek();
+        if (!isCancelled) {
+          setForgottenSurah(resolved);
+        }
+      } catch {
+        if (!isCancelled) {
+          setForgottenSurah(null);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsForgottenSurahLoading(false);
+        }
+      }
+    }
+
+    loadForgottenSurah();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [chapters, surahReadingHistory, journalEntries, bookmarkDetails, lastGlobalReadDateKey]);
+
+  useEffect(() => {
+    if (!isDrawerOpen || drawerTab !== 'surahs') {
+      return;
+    }
+
+    setForgottenSurahDismissedDate(String(localStorage.getItem(FORGOTTEN_SURAH_DISMISSED_DATE_STORAGE_KEY) || '').trim());
+  }, [isDrawerOpen, drawerTab]);
+
   const sortedJournalEntries = useMemo(() => {
     return [...journalEntries].sort((a, b) => {
       const aTime = new Date(a.date || 0).getTime();
@@ -2081,6 +2871,40 @@ export default function App() {
       })
       .join('\n');
   }, [journalEntriesForCurrentSurah]);
+
+  const sharedReflectionsSet = useMemo(() => new Set(sharedReflections), [sharedReflections]);
+  const sharedReflectionCount = sharedReflectionsSet.size;
+  const isPublicAccount = accountPrivacy === 'public';
+
+  const reflectionActor = useMemo(() => {
+    const identity = getCurrentUserIdentity();
+    const loggedIn = Boolean(authSession.loggedIn && identity.userId);
+    const userId = loggedIn ? identity.userId : getOrCreateGuestReflectionActorId();
+    const userName = loggedIn
+      ? identity.name
+      : `Anonymous ${profileName === 'Sister' ? 'Sister' : 'Brother'}`;
+
+    return {
+      userId,
+      userName,
+      loggedIn,
+    };
+  }, [authSession.loggedIn, profileName]);
+
+  const khatmahCurrentVerseId = Number(khatmahProgressState.verseId || 1);
+  const khatmahProgressCount = Math.max(0, Math.min(TOTAL_QURAN_VERSES, khatmahCurrentVerseId));
+  const khatmahProgressPercent = (khatmahProgressCount / TOTAL_QURAN_VERSES) * 100;
+  const khatmahAcceptedCount = livingQuranLog.filter((entry) => String(entry?.status || '') !== 'skipped').length;
+  const khatmahSkippedCount = livingQuranLog.filter((entry) => String(entry?.status || '') === 'skipped').length;
+  const khatmahDoneCount = livingQuranLog.filter((entry) => String(entry?.status || '') === 'done').length;
+  const khatmahStoredVerseParts = parseVerseKeyParts(khatmahProgressState.verseKey || '1:1');
+  const khatmahStoredSurah = chapters.find((chapter) => Number(chapter?.id || 0) === khatmahStoredVerseParts.surah);
+  const hasKhatmahResumePoint = Boolean(khatmahProgressState.verseKey && khatmahProgressState.verseKey !== '1:1');
+  const khatmahResumeLabel = hasKhatmahResumePoint
+    ? `${khatmahStoredSurah?.name_simple || `Surah ${khatmahStoredVerseParts.surah || 1}`}, Verse ${khatmahStoredVerseParts.ayah || 1}`
+    : '';
+  const selectedKhatmahIntervalTarget =
+    KHATMAH_INTERVAL_OPTIONS.find((option) => option.id === khatmahInterval)?.targetVerses || 10;
 
   function addCoins(amount) {
     setCoins((current) => current + amount);
@@ -2392,6 +3216,122 @@ export default function App() {
     }));
   }
 
+  function parseLiveThisResponse(rawText) {
+    const lines = String(rawText || '')
+      .split(/\r?\n+/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    const fallback = { action: '', why: '', example: '' };
+
+    lines.forEach((line) => {
+      if (/^action:/i.test(line)) {
+        fallback.action = line.replace(/^action:\s*/i, '').trim();
+      } else if (/^why:/i.test(line)) {
+        fallback.why = line.replace(/^why:\s*/i, '').trim();
+      } else if (/^example:/i.test(line)) {
+        fallback.example = line.replace(/^example:\s*/i, '').trim();
+      }
+    });
+
+    if (fallback.action || fallback.why || fallback.example) {
+      return fallback;
+    }
+
+    return {
+      action: lines[0] || '',
+      why: lines[1] || '',
+      example: lines[2] || '',
+    };
+  }
+
+  async function toggleLiveThis(verse) {
+    const verseId = getVerseId(verse);
+    const currentState = liveThisByVerse[verseId] || {};
+
+    if (currentState.expanded) {
+      setLiveThisByVerse((current) => ({
+        ...current,
+        [verseId]: {
+          ...(current[verseId] || {}),
+          expanded: false,
+        },
+      }));
+      return;
+    }
+
+    if (currentState.response && !currentState.loading) {
+      setLiveThisByVerse((current) => ({
+        ...current,
+        [verseId]: {
+          ...(current[verseId] || {}),
+          expanded: true,
+          error: '',
+        },
+      }));
+      return;
+    }
+
+    const translation =
+      verse.translations?.[0]?.text ||
+      verse.translations?.[0]?.translation ||
+      verse.translation?.text ||
+      '';
+
+    setLiveThisByVerse((current) => ({
+      ...current,
+      [verseId]: {
+        ...(current[verseId] || {}),
+        expanded: true,
+        loading: true,
+        error: '',
+      },
+    }));
+
+    try {
+      const response = await fetch('/api/ai/live-this', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentSurah: selectedChapter?.name_simple || '',
+          currentVerse: String(verse.verse_key || verseId),
+          currentArabicText: String(verse.text_uthmani || ''),
+          currentTranslation: String(translation || ''),
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || payload?.error || 'Failed to generate Live this action');
+      }
+
+      const nextResponse = String(payload?.response || '').trim();
+      if (!nextResponse) {
+        throw new Error('No action returned for this verse yet');
+      }
+
+      setLiveThisByVerse((current) => ({
+        ...current,
+        [verseId]: {
+          expanded: true,
+          loading: false,
+          error: '',
+          response: nextResponse,
+        },
+      }));
+    } catch (err) {
+      setLiveThisByVerse((current) => ({
+        ...current,
+        [verseId]: {
+          ...(current[verseId] || {}),
+          expanded: true,
+          loading: false,
+          error: err.message || 'Failed to generate Live this action',
+        },
+      }));
+    }
+  }
+
   function toggleBookmark(verse) {
     const verseId = getVerseId(verse);
     const isAlreadyBookmarked = bookmarks.has(verseId);
@@ -2461,6 +3401,8 @@ export default function App() {
       verse.translation?.text ||
       '';
 
+    setReflectionShareNotice('');
+    setJournalViewTab('mine');
     setReflectionModal({
       mode: 'new',
       verseKey,
@@ -2473,6 +3415,8 @@ export default function App() {
 
   function openJournalEntry(entry) {
     const entryIndex = journalEntries.findIndex((item) => item === entry);
+    setReflectionShareNotice('');
+    setJournalViewTab('mine');
     setReflectionModal({
       mode: 'saved',
       entryIndex,
@@ -2485,7 +3429,54 @@ export default function App() {
     setIsDrawerOpen(false);
   }
 
-  function saveReflectionEntry() {
+  async function publishReflectionEntry(entry, { showNotice = false } = {}) {
+    if (!entry || accountPrivacy !== 'public') {
+      return { published: false, reason: 'privacy' };
+    }
+
+    const answer = String(entry.answer || '').trim();
+    if (!answer) {
+      return { published: false, reason: 'empty' };
+    }
+
+    const shareKey = getReflectionShareKey(entry);
+    if (sharedReflectionsSet.has(shareKey)) {
+      return { published: false, reason: 'already-shared' };
+    }
+
+    const response = await fetch('/api/reflections/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: reflectionActor.userId,
+        userName: reflectionActor.loggedIn ? reflectionActor.userName : 'Anonymous Brother/Sister',
+        verseKey: entry.verseKey,
+        verseText: entry.verseText,
+        translation: entry.translation,
+        answer,
+        date: entry.date,
+        accountPrivacy,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.message || 'Could not share reflection');
+    }
+
+    setSharedReflections((current) => Array.from(new Set([...current, shareKey])));
+    if (showNotice) {
+      setReflectionShareNotice('Your reflection has been shared to the community');
+    }
+    fetchCommunityReflections({
+      silent: true,
+      verseKey: String(entry.verseKey || '').trim(),
+    });
+
+    return { published: true };
+  }
+
+  async function saveReflectionEntry() {
     if (!reflectionModal) {
       return;
     }
@@ -2506,15 +3497,647 @@ export default function App() {
       return [entry, ...current];
     });
 
+    try {
+      await publishReflectionEntry(entry, { showNotice: false });
+    } catch (error) {
+      setError(error.message || 'Saved locally, but could not share to community');
+    }
+
     setReflectionModal(null);
   }
+
+  async function fetchCommunityReflections({ silent = false, verseKey = '' } = {}) {
+    if (!silent) {
+      setIsCommunityLoading(true);
+    }
+    setCommunityFeedError('');
+
+    try {
+      const normalizedVerseKey = String(verseKey || reflectionModal?.verseKey || '').trim();
+      const query = normalizedVerseKey ? `?verseKey=${encodeURIComponent(normalizedVerseKey)}` : '';
+      const response = await fetch(`/api/reflections/public${query}`);
+      const payload = await response.json().catch(() => []);
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not load community reflections');
+      }
+
+      setCommunityReflections(Array.isArray(payload) ? payload : []);
+    } catch (error) {
+      setCommunityFeedError(error.message || 'Could not load community reflections');
+    } finally {
+      if (!silent) {
+        setIsCommunityLoading(false);
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!reflectionModal || journalViewTab !== 'community') {
+      return;
+    }
+
+    fetchCommunityReflections({ verseKey: String(reflectionModal.verseKey || '').trim() });
+  }, [reflectionModal, journalViewTab]);
+
+  function toggleCommunityReflectionExpanded(reflectionId) {
+    const key = String(reflectionId || '');
+    if (!key) {
+      return;
+    }
+
+    setExpandedCommunityItems((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
+  }
+
+  async function handleShareReflectionToCommunity() {
+    if (!reflectionModal || reflectionModal.mode !== 'saved') {
+      return;
+    }
+
+    setIsSharingReflection(true);
+    setReflectionShareNotice('');
+
+    try {
+      await publishReflectionEntry(reflectionModal, { showNotice: true });
+    } catch (error) {
+      setReflectionShareNotice(error.message || 'Could not share reflection');
+    } finally {
+      setIsSharingReflection(false);
+    }
+  }
+
+  async function toggleCommunityLike(reflectionId) {
+    const id = String(reflectionId || '').trim();
+    if (!id) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/reflections/${encodeURIComponent(id)}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: reflectionActor.userId }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not update like');
+      }
+
+      setCommunityReflections((current) =>
+        current.map((item) => {
+          if (String(item?.id || '') !== id) {
+            return item;
+          }
+
+          return {
+            ...item,
+            likes: Number(payload?.likes || 0),
+            likedBy: Array.isArray(payload?.likedBy) ? payload.likedBy : item.likedBy,
+          };
+        })
+      );
+    } catch (error) {
+      setCommunityFeedError(error.message || 'Could not update like');
+    }
+  }
+
+  async function deleteCommunityReflection(reflectionId) {
+    const id = String(reflectionId || '').trim();
+    if (!id) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/reflections/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: reflectionActor.userId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok && response.status !== 204) {
+        throw new Error(payload?.message || 'Could not delete reflection');
+      }
+
+      setCommunityReflections((current) => current.filter((item) => String(item?.id || '') !== id));
+    } catch (error) {
+      setCommunityFeedError(error.message || 'Could not delete reflection');
+    }
+  }
+
+  function getKhatmahVerseTranslation(verse) {
+    return String(
+      verse?.translations?.[0]?.text ||
+      verse?.translations?.[0]?.translation ||
+      verse?.translation?.text ||
+      ''
+    ).trim();
+  }
+
+  async function fetchKhatmahSurahVerses(chapterId) {
+    const perPage = 50;
+    const baseParams = `word_fields=audio_url,translation_text&fields=text_uthmani&words=true&per_page=${perPage}`;
+
+    async function fetchAllVersePages(translationId) {
+      const firstResponse = await fetch(
+        `/api/quran/verses/by_chapter/${chapterId}?${baseParams}&translations=${translationId}&page=1`
+      );
+      const firstPayload = await firstResponse.json();
+
+      if (!firstResponse.ok) {
+        throw new Error(firstPayload?.message || 'Failed to fetch verses');
+      }
+
+      const totalPages = Number(firstPayload?.pagination?.total_pages || 1);
+      if (totalPages <= 1) {
+        return firstPayload;
+      }
+
+      const remainingPagePayloads = await Promise.all(
+        Array.from({ length: totalPages - 1 }, (_, index) => index + 2).map(async (page) => {
+          const response = await fetch(
+            `/api/quran/verses/by_chapter/${chapterId}?${baseParams}&translations=${translationId}&page=${page}`
+          );
+          const payload = await response.json();
+
+          if (!response.ok) {
+            throw new Error(payload?.message || `Failed to fetch verses page ${page}`);
+          }
+
+          return payload;
+        })
+      );
+
+      return {
+        ...firstPayload,
+        verses: [
+          ...(Array.isArray(firstPayload?.verses) ? firstPayload.verses : []),
+          ...remainingPagePayloads.flatMap((payload) => (Array.isArray(payload?.verses) ? payload.verses : [])),
+        ],
+      };
+    }
+
+    let payload = await fetchAllVersePages(131);
+    const hasTranslation = (payload?.verses || []).some((verse) => Boolean(getKhatmahVerseTranslation(verse)));
+    if (!hasTranslation) {
+      const fallbackPayload = await fetchAllVersePages(85);
+      if (Array.isArray(fallbackPayload?.verses) && fallbackPayload.verses.length > 0) {
+        payload = fallbackPayload;
+      }
+    }
+
+    return Array.isArray(payload?.verses) ? payload.verses : [];
+  }
+
+  async function loadKhatmahSurah(chapterId, { resumeVerseKey = '', resetCheckpoint = false } = {}) {
+    const numericChapterId = Number.parseInt(String(chapterId || ''), 10);
+    if (!Number.isFinite(numericChapterId) || numericChapterId <= 0) {
+      throw new Error('Invalid surah for Khatmah Mode');
+    }
+
+    setKhatmahError('');
+    setIsKhatmahLoading(true);
+    try {
+      const versesForSurah = await fetchKhatmahSurahVerses(numericChapterId);
+      if (!versesForSurah.length) {
+        throw new Error('Could not load Khatmah verses');
+      }
+
+      const resumeIndex = Math.max(
+        0,
+        versesForSurah.findIndex((verse) => String(verse?.verse_key || '') === String(resumeVerseKey || '').trim())
+      );
+      const checkpointStart = resetCheckpoint ? 0 : resumeIndex;
+      const resumeVerse = versesForSurah[resumeIndex] || versesForSurah[0];
+
+      setKhatmahSurahId(numericChapterId);
+      setKhatmahVerses(versesForSurah);
+      setKhatmahBlockStartIndex(checkpointStart);
+      setKhatmahGateEndIndex(-1);
+      setVersesSinceLastCheckpoint(0);
+      setKhatmahWindowStartIndex(Math.floor(Math.max(0, resumeIndex) / 10) * 10);
+      setKhatmahCurrentReadIndex(Math.max(0, resumeIndex));
+      khatmahReadVerseKeysRef.current = new Set();
+      khatmahCheckpointReadIndicesRef.current = new Set();
+      khatmahGateTriggeringRef.current = false;
+      setKhatmahGate({
+        open: false,
+        verseRange: '',
+        verses: [],
+        loading: false,
+        theme: '',
+        challenges: [],
+        acceptedIndexes: [],
+        error: '',
+      });
+      setKhatmahProgressState({
+        verseKey: String(resumeVerse?.verse_key || `${numericChapterId}:1`),
+        verseId: Number(resumeVerse?.id || khatmahProgressState.verseId || 1),
+      });
+
+      window.setTimeout(() => {
+        const safeKey = String(resumeVerse?.verse_key || '').replace(/"/g, '\\"');
+        const node = safeKey
+          ? document.querySelector(`[data-khatmah-verse-key="${safeKey}"]`)
+          : null;
+        if (node && typeof node.scrollIntoView === 'function') {
+          node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+      }, 0);
+    } finally {
+      setIsKhatmahLoading(false);
+    }
+  }
+
+  async function loadKhatmahFromProgress() {
+    const stored = readStoredKhatmahProgress();
+    const { surah } = parseVerseKeyParts(stored.verseKey || '1:1');
+    const targetSurah = surah || 1;
+    await loadKhatmahSurah(targetSurah, {
+      resumeVerseKey: stored.verseKey || `${targetSurah}:1`,
+      resetCheckpoint: false,
+    });
+  }
+
+  async function openKhatmahMode({ directStart = false } = {}) {
+    setIsDrawerOpen(false);
+    setIsUserMenuOpen(false);
+    setActivePage('khatmah');
+    setKhatmahTransition(null);
+    if (!directStart) {
+      setKhatmahSurahId(null);
+      setKhatmahVerses([]);
+      setKhatmahBlockStartIndex(0);
+      setKhatmahGateEndIndex(-1);
+      setVersesSinceLastCheckpoint(0);
+      setKhatmahWindowStartIndex(0);
+      setKhatmahCurrentReadIndex(-1);
+      khatmahReadVerseKeysRef.current = new Set();
+      khatmahCheckpointReadIndicesRef.current = new Set();
+      setKhatmahGate((current) => ({ ...current, open: false }));
+      return;
+    }
+
+    await loadKhatmahFromProgress();
+  }
+
+  async function beginKhatmah() {
+    await loadKhatmahFromProgress();
+  }
+
+  function upsertLivingLogEntry(entry) {
+    setLivingQuranLog((current) => {
+      const id = String(entry?.id || '');
+      if (!id) {
+        return current;
+      }
+      const index = current.findIndex((item) => String(item?.id || '') === id);
+      if (index < 0) {
+        return [entry, ...current];
+      }
+      const next = [...current];
+      next[index] = { ...next[index], ...entry };
+      return next;
+    });
+  }
+
+  async function buildActionGateForRange(blockVerses, gateEndIndex) {
+    const verses = (Array.isArray(blockVerses) ? blockVerses : [])
+      .filter(Boolean)
+      .map((verse) => ({
+        verseKey: String(verse?.verse_key || ''),
+        translation: stripHtmlTags(getKhatmahVerseTranslation(verse)),
+      }))
+      .filter((verse) => verse.verseKey);
+
+    const verseRange = verses.length ? `${verses[0].verseKey} - ${verses[verses.length - 1].verseKey}` : '';
+
+    setKhatmahGate({
+      open: true,
+      verseRange,
+      verses,
+      loading: true,
+      theme: '',
+      challenges: [],
+      acceptedIndexes: [],
+      error: '',
+    });
+    setKhatmahGateEndIndex(Number.isFinite(gateEndIndex) ? gateEndIndex : -1);
+
+    try {
+      const response = await fetch('/api/ai/action-challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verses }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Could not generate action challenge');
+      }
+
+      setKhatmahGate((current) => ({
+        ...current,
+        loading: false,
+        theme: String(payload?.theme || 'Intentional Quran living'),
+        challenges: (Array.isArray(payload?.challenges) ? payload.challenges : [])
+          .slice(0, 2)
+          .map((item) => ({
+            title: String(item?.title || 'Live one verse today'),
+            body: String(item?.body || 'Take one practical action from these verses today.'),
+          })),
+        acceptedIndexes: [],
+        error: '',
+      }));
+    } catch (error) {
+      setKhatmahGate((current) => ({
+        ...current,
+        loading: false,
+        theme: current.theme || 'Intentional Quran living',
+        challenges:
+          current.challenges?.length
+            ? current.challenges
+            : [{ title: 'Live one verse today', body: 'Choose one practical action from these verses and complete it today.' }],
+        acceptedIndexes: [],
+        error: error.message || 'Could not generate challenge',
+      }));
+    }
+  }
+
+  function toggleGateChallengeAccepted(index) {
+    const target = Number.parseInt(String(index || 0), 10);
+    if (!Number.isFinite(target) || target < 0) {
+      return;
+    }
+
+    setKhatmahGate((current) => {
+      const existing = Array.isArray(current.acceptedIndexes) ? current.acceptedIndexes : [];
+      const hasTarget = existing.includes(target);
+      const acceptedIndexes = hasTarget ? existing.filter((item) => item !== target) : [...existing, target];
+      return {
+        ...current,
+        acceptedIndexes,
+      };
+    });
+  }
+
+  async function onKhatmahVerseRead(index) {
+    if (khatmahGate.open || khatmahTransition || khatmahGateTriggeringRef.current || isKhatmahLoading) {
+      return;
+    }
+
+    const numericIndex = Number.parseInt(String(index || ''), 10);
+    if (!Number.isFinite(numericIndex) || numericIndex < khatmahBlockStartIndex || numericIndex >= khatmahVerses.length) {
+      return;
+    }
+
+    const verse = khatmahVerses[numericIndex];
+    const verseKey = String(verse?.verse_key || '');
+    if (!verseKey || khatmahReadVerseKeysRef.current.has(verseKey)) {
+      return;
+    }
+
+    khatmahReadVerseKeysRef.current.add(verseKey);
+    khatmahCheckpointReadIndicesRef.current.add(numericIndex);
+    setKhatmahCurrentReadIndex(numericIndex);
+
+    setKhatmahProgressState({
+      verseKey,
+      verseId: Number(verse?.id || khatmahProgressState.verseId || 1),
+    });
+
+    const currentCount = khatmahCheckpointReadIndicesRef.current.size;
+    setVersesSinceLastCheckpoint(currentCount);
+
+    const lastIndex = khatmahVerses.length - 1;
+    const reachedInterval = currentCount >= selectedKhatmahIntervalTarget;
+    const reachedSurahEndWithPending = numericIndex >= lastIndex && currentCount > 0;
+    if (!reachedInterval && !reachedSurahEndWithPending) {
+      const windowEndIndex = khatmahWindowStartIndex + 9;
+      if (numericIndex >= windowEndIndex && windowEndIndex < khatmahVerses.length - 1) {
+        setKhatmahWindowStartIndex((current) => {
+          const next = Math.min(current + 10, Math.max(0, khatmahVerses.length - 1));
+          return next;
+        });
+      }
+      return;
+    }
+
+    khatmahGateTriggeringRef.current = true;
+    try {
+      const sortedIndices = Array.from(khatmahCheckpointReadIndicesRef.current).sort((a, b) => a - b);
+      const gateEndIndex = sortedIndices[sortedIndices.length - 1];
+      const blockVerses = sortedIndices
+        .map((readIndex) => khatmahVerses[readIndex])
+        .filter(Boolean);
+
+      await buildActionGateForRange(blockVerses, gateEndIndex);
+    } finally {
+      khatmahGateTriggeringRef.current = false;
+    }
+  }
+
+  function getKhatmahNextSurah() {
+    const currentSurah = Number(khatmahSurahId || 0);
+    if (!currentSurah) {
+      return null;
+    }
+
+    return chapters.find((chapter) => Number(chapter?.id || 0) === currentSurah + 1) || null;
+  }
+
+  function unlockKhatmahAfterGate({ skipAll = false } = {}) {
+    const gateEnd = Number(khatmahGateEndIndex || -1);
+    if (gateEnd < 0 || gateEnd >= khatmahVerses.length) {
+      setKhatmahGate((current) => ({ ...current, open: false }));
+      return;
+    }
+
+    const acceptedIndexes = skipAll ? [] : Array.isArray(khatmahGate.acceptedIndexes) ? khatmahGate.acceptedIndexes : [];
+    const gateChallenges = Array.isArray(khatmahGate.challenges) ? khatmahGate.challenges : [];
+
+    if (acceptedIndexes.length > 0) {
+      acceptedIndexes.forEach((challengeIndex) => {
+        const challenge = gateChallenges[challengeIndex] || {};
+        upsertLivingLogEntry({
+          id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          verseRange: khatmahGate.verseRange,
+          theme: khatmahGate.theme,
+          challengeTitle: String(challenge?.title || 'Live one verse today'),
+          challengeBody: String(challenge?.body || 'Choose one practical action from these verses and complete it today.'),
+          acceptedDate: new Date().toISOString().slice(0, 10),
+          status: 'active',
+          reflection: '',
+        });
+      });
+    } else {
+      const firstChallenge = gateChallenges[0] || {};
+      upsertLivingLogEntry({
+        id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        verseRange: khatmahGate.verseRange,
+        theme: khatmahGate.theme,
+        challengeTitle: String(firstChallenge?.title || 'Live one verse today'),
+        challengeBody: String(firstChallenge?.body || 'Choose one practical action from these verses and complete it today.'),
+        acceptedDate: new Date().toISOString().slice(0, 10),
+        status: 'skipped',
+        reflection: '',
+      });
+    }
+
+    const completedVerse = khatmahVerses[gateEnd];
+    if (completedVerse) {
+      setKhatmahProgressState({
+        verseKey: String(completedVerse?.verse_key || khatmahProgressState.verseKey || '1:1'),
+        verseId: Number(completedVerse?.id || khatmahProgressState.verseId || 1),
+      });
+    }
+
+    const reachedSurahEnd = gateEnd >= khatmahVerses.length - 1;
+    if (reachedSurahEnd) {
+      const nextSurah = getKhatmahNextSurah();
+      if (nextSurah) {
+        setKhatmahTransition({
+          chapterId: Number(nextSurah.id),
+          nameSimple: String(nextSurah.name_simple || `Surah ${nextSurah.id}`),
+          nameArabic: String(nextSurah.name_arabic || ''),
+          versesCount: Number(nextSurah.verses_count || nextSurah.versesCount || 0),
+        });
+      } else {
+        setKhatmahTransition({
+          chapterId: 0,
+          nameSimple: 'Khatmah Completed',
+          nameArabic: '',
+          versesCount: 0,
+          completed: true,
+        });
+      }
+    } else {
+      setKhatmahBlockStartIndex(gateEnd + 1);
+    }
+
+    khatmahCheckpointReadIndicesRef.current = new Set();
+    setVersesSinceLastCheckpoint(0);
+    setKhatmahWindowStartIndex(Math.floor(Math.max(0, gateEnd + 1) / 10) * 10);
+
+    setKhatmahGateEndIndex(-1);
+    setKhatmahGate({
+      open: false,
+      verseRange: '',
+      verses: [],
+      loading: false,
+      theme: '',
+      challenges: [],
+      acceptedIndexes: [],
+      error: '',
+    });
+  }
+
+  async function continueToNextKhatmahSurah() {
+    if (!khatmahTransition || khatmahTransition.completed) {
+      return;
+    }
+
+    setKhatmahTransition(null);
+    try {
+      await loadKhatmahSurah(khatmahTransition.chapterId, {
+        resumeVerseKey: `${khatmahTransition.chapterId}:1`,
+        resetCheckpoint: true,
+      });
+    } catch (error) {
+      setKhatmahError(error.message || 'Could not load next surah');
+    }
+  }
+
+  function markLivingChallengeDone(id) {
+    setLivingQuranLog((current) =>
+      current.map((entry) =>
+        String(entry?.id || '') === String(id)
+          ? { ...entry, status: 'done' }
+          : entry
+      )
+    );
+  }
+
+  function updateLivingChallengeReflection(id, reflection) {
+    setLivingQuranLog((current) =>
+      current.map((entry) =>
+        String(entry?.id || '') === String(id)
+          ? { ...entry, reflection: String(reflection || '') }
+          : entry
+      )
+    );
+  }
+
+  useEffect(() => {
+    if (activePage !== 'khatmah' || !khatmahVerses.length || khatmahTransition || khatmahGate.open) {
+      return;
+    }
+
+    if (khatmahObserverRef.current) {
+      khatmahObserverRef.current.disconnect();
+      khatmahObserverRef.current = null;
+    }
+
+    khatmahVisibleTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    khatmahVisibleTimersRef.current = new Map();
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const node = entry.target;
+          const index = Number.parseInt(String(node.getAttribute('data-khatmah-index') || ''), 10);
+          if (!Number.isFinite(index) || index < khatmahBlockStartIndex) {
+            return;
+          }
+
+          const verseKey = String(node.getAttribute('data-khatmah-verse-key') || '');
+          if (!verseKey || khatmahReadVerseKeysRef.current.has(verseKey)) {
+            return;
+          }
+
+          const existingTimer = khatmahVisibleTimersRef.current.get(verseKey);
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
+            if (!existingTimer) {
+              const timerId = window.setTimeout(() => {
+                khatmahVisibleTimersRef.current.delete(verseKey);
+                onKhatmahVerseRead(index);
+              }, 1000);
+              khatmahVisibleTimersRef.current.set(verseKey, timerId);
+            }
+            return;
+          }
+
+          if (existingTimer) {
+            window.clearTimeout(existingTimer);
+            khatmahVisibleTimersRef.current.delete(verseKey);
+          }
+        });
+      },
+      { threshold: [0.6] }
+    );
+
+    khatmahObserverRef.current = observer;
+    document.querySelectorAll('[data-khatmah-index]').forEach((node) => observer.observe(node));
+
+    return () => {
+      observer.disconnect();
+      khatmahVisibleTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+      khatmahVisibleTimersRef.current = new Map();
+      khatmahObserverRef.current = null;
+    };
+  }, [activePage, khatmahVerses, khatmahBlockStartIndex, khatmahTransition, khatmahGate.open]);
 
   function openCompanion() {
     if (!companionMessages.length) {
       setCompanionMessages([
         {
           role: 'assistant',
-          content: `As-salamu alaykum! I can see you're reading ${currentSurahForCompanion}. Ask me anything about this verse or surah — its meaning, context, tafsir, or anything else on your mind.`,
+          content: `As-salamu alaykum. I'm here with you in ${currentSurahForCompanion}. If you'd like, I can give a simple meaning, brief context, or one practical takeaway from the verse you're on.`,
         },
       ]);
     }
@@ -2537,6 +4160,7 @@ export default function App() {
         messages: nextMessages,
         currentVerse: currentVerseForCompanion,
         currentSurah: currentSurahForCompanion,
+        currentArabicText: currentArabicTextForCompanion,
         currentTranslation: currentTranslationForCompanion,
         journalEntriesForCurrentSurah: journalEntriesForCurrentSurahText,
         surahVerses: verses.map((verse) => ({
@@ -2559,18 +4183,6 @@ export default function App() {
         body: requestBody,
       });
 
-      if (response.status === 503) {
-        setError('Gemini is busy, retrying...');
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        response = await fetch('/api/ai/companion', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: requestBody,
-        });
-      }
-
       const payload = await response.json();
 
       if (!response.ok) {
@@ -2582,7 +4194,7 @@ export default function App() {
 
       setError('');
 
-      const reply = String(payload?.reply || '').trim() || 'I am here with you. Could you rephrase that question?';
+      const reply = String(payload?.reply || payload?.response || '').trim() || 'I am here with you. Could you rephrase that question?';
       setCompanionMessages((current) => [...current, { role: 'assistant', content: reply }]);
     } catch (err) {
       setCompanionMessages((current) => [
@@ -2712,9 +4324,14 @@ export default function App() {
       }
 
       const chapterMap = buildAudioMap(payload?.audio_files || []);
+      const chapterTimings = buildWordTimingMap(payload?.audio_files || []);
       setAudioByChapter((current) => ({
         ...current,
         [cacheKey]: chapterMap,
+      }));
+      setWordTimingsByChapter((current) => ({
+        ...current,
+        [cacheKey]: chapterTimings,
       }));
 
       return chapterMap;
@@ -3878,6 +5495,7 @@ export default function App() {
 
     setIsAudioPlaying(false);
     setAudioProgress(0);
+    setActiveAudioWord(null);
     setCurrentAudio(null);
     setIsAudioBarVisible(false);
   }
@@ -3921,24 +5539,183 @@ export default function App() {
     }
   }
 
+  async function requestUnsealWordAnalysis(payload) {
+    const response = await fetch('/api/ai/unseal-word', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error('Could not unseal this word right now. Please try again in a bit.');
+    }
+
+    const acrossQuranInput = Array.isArray(result?.acrossQuran) ? result.acrossQuran : [];
+    const acrossQuran = acrossQuranInput
+      .map((entry) => ({
+        verseKey: String(entry?.verseKey || '').trim(),
+        quote: String(entry?.quote || '').trim(),
+        context: String(entry?.context || '').trim(),
+      }))
+      .filter((entry) => entry.verseKey && entry.quote)
+      .slice(0, 3);
+
+    return {
+      totalOccurrences: Number.parseInt(String(result?.totalOccurrences || 0), 10) || 0,
+      mostCommonSurah: String(result?.mostCommonSurah || '').trim(),
+      makkiOrMadani: String(result?.makkiOrMadani || '').trim(),
+      whyThisWord: String(result?.whyThisWord || '').trim(),
+      coreMeaning: String(result?.coreMeaning || result?.coreМeaning || '').trim(),
+      acrossQuran,
+      whatChanges: String(result?.whatChanges || '').trim(),
+    };
+  }
+
+  async function openUnsealedWordPanel() {
+    if (!wordTooltip) {
+      return;
+    }
+
+    const arabicWord = String(wordTooltip.arabicWord || '').trim();
+    if (!arabicWord) {
+      return;
+    }
+
+    const rootDisplay = formatWordRootDisplay(wordTooltip.wordRoot);
+    setUnsealedWordPanel({
+      loading: true,
+      arabicWord,
+      root: rootDisplay,
+      pronunciation: String(wordTooltip.wordPronunciation || '').trim(),
+      verseKey: String(wordTooltip.verseKey || '').trim(),
+      error: '',
+      analysis: null,
+    });
+    setWordTooltip(null);
+
+    try {
+      const analysis = await requestUnsealWordAnalysis({
+        arabicWord,
+        wordRoot: rootDisplay || String(wordTooltip.wordRoot || '').trim(),
+        verseKey: String(wordTooltip.verseKey || '').trim(),
+        verseText: String(wordTooltip.verseText || '').trim(),
+        translation: String(wordTooltip.translation || '').trim(),
+      });
+
+      setUnsealedWordPanel((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return {
+          ...current,
+          loading: false,
+          analysis,
+        };
+      });
+    } catch (error) {
+      setUnsealedWordPanel((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return {
+          ...current,
+          loading: false,
+          error: error.message || 'Could not unseal this word right now.',
+        };
+      });
+    }
+  }
+
+  function closeUnsealedWordPanel() {
+    setUnsealedWordPanel(null);
+  }
+
+  function jumpToAcrossQuranVerse(verseKey) {
+    const parsed = parseVerseKeyParts(verseKey);
+    if (!parsed.surah || !parsed.ayah) {
+      return;
+    }
+
+    const targetChapter = chapters.find((chapter) => Number(chapter?.id || 0) === parsed.surah);
+    if (!targetChapter) {
+      return;
+    }
+
+    const targetVerseKey = `${parsed.surah}:${parsed.ayah}`;
+    setPendingBookmarkJump({
+      chapterId: parsed.surah,
+      verseId: '',
+      verseKey: targetVerseKey,
+    });
+    setSelectedChapter(targetChapter);
+    setActivePage('reader');
+    closeUnsealedWordPanel();
+  }
+
+  function renderWhyThisWordText(text) {
+    const source = String(text || '');
+    const terms = extractAlternativeTerms(source);
+    if (!source || !terms.length) {
+      return source;
+    }
+
+    const matcher = new RegExp(`(${terms.map((term) => escapeRegExp(term)).join('|')})`, 'gi');
+    const chunks = source.split(matcher);
+
+    return chunks.map((chunk, index) => {
+      const isAltTerm = terms.some((term) => term.toLowerCase() === chunk.toLowerCase());
+      return isAltTerm ? (
+        <span key={`why-alt-${index}`} className="unsealed-alt-term">
+          {chunk}
+        </span>
+      ) : (
+        <span key={`why-text-${index}`}>{chunk}</span>
+      );
+    });
+  }
+
   async function handleArabicTextClick(verse, event) {
+    const clickTarget = event.target instanceof HTMLElement ? event.target : null;
+    const isOrnamentClick = Boolean(clickTarget?.closest('.verse-ornament'));
+    const verseId = String(getVerseId(verse));
+
+    if (isOrnamentClick) {
+      triggerVerseGlow(verseId);
+      return;
+    }
+
     const container = event.currentTarget;
     const words = buildInteractiveWords(verse);
     if (!words.length) {
       return;
     }
 
-    const wordIndex = findClosestWordIndexByCenter(container, event.clientX, event.clientY);
+    const wordIndex = findClosestWordIndexByCenter(container, event.clientX, event.clientY, 60);
     const word = words[wordIndex];
     if (!word) {
       return;
     }
 
-    const verseId = getVerseId(verse);
     setWordTooltip({
       verseId,
       wordIndex,
       text: word.translation_text || 'No meaning available.',
+      arabicWord: String(word.text_uthmani || '').trim(),
+      wordRoot: String(word.root || '').trim(),
+      wordPronunciation: String(word.transliteration || '').trim(),
+      verseKey: String(verse?.verse_key || ''),
+      verseText: String(verse?.text_uthmani || ''),
+      translation: stripHtmlTags(
+        verse?.translations?.[0]?.text ||
+        verse?.translations?.[0]?.translation ||
+        verse?.translation?.text ||
+        ''
+      ),
       x: event.clientX,
       y: event.clientY,
     });
@@ -3947,14 +5724,22 @@ export default function App() {
   }
 
   function handleArabicTextMouseMove(verse, event) {
-    const container = event.currentTarget;
-    const words = buildInteractiveWords(verse);
-    if (!words.length) {
+    const hoverTarget = event.target instanceof HTMLElement ? event.target : null;
+    if (hoverTarget?.closest('.verse-ornament')) {
+      setHoveredWord(null);
       return;
     }
 
-    const wordIndex = findClosestWordIndexByCenter(container, event.clientX, event.clientY);
+    const container = event.currentTarget;
+    const words = buildInteractiveWords(verse);
+    if (!words.length) {
+      setHoveredWord(null);
+      return;
+    }
+
+    const wordIndex = findClosestWordIndexByCenter(container, event.clientX, event.clientY, 60);
     if (wordIndex < 0) {
+      setHoveredWord(null);
       return;
     }
 
@@ -3970,6 +5755,58 @@ export default function App() {
 
   function handleArabicTextMouseLeave() {
     setHoveredWord(null);
+  }
+
+  function triggerVerseGlow(verseId) {
+    const normalizedVerseId = String(verseId || '');
+    if (!normalizedVerseId) {
+      return;
+    }
+
+    setWordTooltip(null);
+    setHoveredWord(null);
+    setGlowingVerseId(normalizedVerseId);
+
+    if (verseGlowTimerRef.current) {
+      clearTimeout(verseGlowTimerRef.current);
+    }
+
+    verseGlowTimerRef.current = setTimeout(() => {
+      setGlowingVerseId((current) => (current === normalizedVerseId ? '' : current));
+      verseGlowTimerRef.current = null;
+    }, 2000);
+  }
+
+  function handleOrnamentClick(verse, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    triggerVerseGlow(getVerseId(verse));
+  }
+
+  function handleOrnamentMouseEnter(verse, event) {
+    const verseId = String(getVerseId(verse));
+    const translation = stripHtmlTags(
+      verse?.translations?.[0]?.text ||
+      verse?.translations?.[0]?.translation ||
+      verse?.translation?.text ||
+      ''
+    );
+
+    setWordTooltip(null);
+    setHoveredWord(null);
+    setHoveredOrnamentVerseId(verseId);
+    setOrnamentVersePreview({
+      verseKey: String(verse?.verse_key || ''),
+      verseText: String(verse?.text_uthmani || ''),
+      translation,
+      x: Number(event?.clientX || 0),
+      y: Number(event?.clientY || 0),
+    });
+  }
+
+  function handleOrnamentMouseLeave() {
+    setHoveredOrnamentVerseId('');
+    setOrnamentVersePreview(null);
   }
 
   function onAudioTimeUpdate() {
@@ -4040,8 +5877,23 @@ export default function App() {
   const oauthDisplayName = String(authSession.user?.name || authSession.user?.email || '').trim();
   const displayedProfileName = authSession.loggedIn ? oauthDisplayName || 'Friend' : profileName;
   const headerProfileName = authSession.loggedIn ? getFirstName(oauthDisplayName) || 'User' : profileName;
+  const reflectionShareKey = reflectionModal ? getReflectionShareKey(reflectionModal) : '';
+  const isSavedReflection = Boolean(reflectionModal?.mode === 'saved');
+  const isReflectionShared = isSavedReflection && sharedReflectionsSet.has(reflectionShareKey);
   const currentUserId = String(authSession.user?.sub || authSession.user?.email || oauthDisplayName || '').trim();
   const currentUserVote = Number(groupData?.wirdVotes?.[currentUserId] || 0);
+  const selectedReciterLabel =
+    reciterOptions.find((option) => option.id === selectedReciterId)?.label ||
+    DEFAULT_RECITER_OPTIONS.find((option) => option.id === selectedReciterId)?.label ||
+    'Selected Reciter';
+  const khatmahCurrentSurah = chapters.find((chapter) => Number(chapter?.id || 0) === Number(khatmahSurahId || 0)) || null;
+  const khatmahVisibleWindow = khatmahVerses
+    .slice(khatmahWindowStartIndex, khatmahWindowStartIndex + 10)
+    .map((verse, offset) => ({ verse, index: khatmahWindowStartIndex + offset }));
+  const khatmahCurrentTrackedVerse =
+    khatmahCurrentReadIndex >= 0 && khatmahCurrentReadIndex < khatmahVerses.length
+      ? khatmahVerses[khatmahCurrentReadIndex]
+      : null;
   const sortedGroupMembers = Array.isArray(groupData?.members)
     ? [...groupData.members].sort((a, b) => Number(b?.versesToday || 0) - Number(a?.versesToday || 0))
     : [];
@@ -4050,6 +5902,9 @@ export default function App() {
     : '';
   const volumeIcon = isAudioMuted || audioVolume === 0 ? '🔇' : audioVolume < 0.5 ? '🔉' : '🔊';
   const audioSpeedOptions = [0.5, 0.6, 0.7, 0.8, 0.9, 1];
+  const forgottenSurahChapter = chapters.find(
+    (chapter) => Number(chapter?.id || 0) === Number(forgottenSurah?.surahNumber || 0)
+  );
 
   if (!entryMode) {
     return (
@@ -4143,6 +5998,53 @@ export default function App() {
 
         {drawerTab === 'surahs' ? (
           <>
+            {shouldShowForgottenSurahCard ? (
+              <article className="forgotten-surah-card" aria-live="polite">
+                <button
+                  type="button"
+                  className="forgotten-surah-dismiss-btn"
+                  aria-label="Dismiss forgotten surah card for today"
+                  onClick={() => {
+                    const todayDateKey = getTodayKey();
+                    setForgottenSurahDismissedDate(todayDateKey);
+                    localStorage.setItem(FORGOTTEN_SURAH_DISMISSED_DATE_STORAGE_KEY, todayDateKey);
+                  }}
+                >
+                  ×
+                </button>
+                <small className="forgotten-surah-tier-text">
+                  {forgottenSurah?.tierMessage || 'Refreshing your forgotten surah...'}
+                </small>
+                <h3 className="forgotten-surah-arabic" dir="rtl" lang="ar" translate="no">
+                  {forgottenSurah?.surahNameArabic || (isForgottenSurahLoading ? '...' : '—')}
+                </h3>
+                <p className="forgotten-surah-meta">
+                  {forgottenSurah
+                    ? `${forgottenSurah.surahNumber}. ${forgottenSurah.surahName}`
+                    : 'Preparing your weekly forgotten surah'}
+                </p>
+                <p className="forgotten-surah-hook">
+                  {forgottenSurah?.hook || 'Loading your one-line reminder...'}
+                </p>
+                <button
+                  type="button"
+                  className="forgotten-surah-open-btn"
+                  disabled={!forgottenSurahChapter}
+                  onClick={() => {
+                    if (!forgottenSurahChapter) {
+                      return;
+                    }
+
+                    setSelectedChapter(forgottenSurahChapter);
+                    setActivePage('reader');
+                    setIsDrawerOpen(false);
+                  }}
+                >
+                  {forgottenSurah ? `Read Surah ${forgottenSurah.surahName} now →` : 'Read now →'}
+                </button>
+              </article>
+            ) : null}
+
             <input
               className="search-input"
               type="search"
@@ -4215,13 +6117,17 @@ export default function App() {
               setIsDrawerOpen(true);
             }}
           >
-            {selectedChapter?.name_simple || 'Surahs'} <span aria-hidden="true">▾</span>
+            {selectedChapter?.name_simple || 'Surahs'}
+            <span className="surah-trigger-chevron" aria-hidden="true">
+              ▾
+              {hasForgottenSurahSignal ? <span className="forgotten-surah-dot" /> : null}
+            </span>
           </button>
           <div className="reading-header-info" aria-live="polite">
             <span className="reading-header-page">Page {centeredVerseData?.page_number || '-'}</span>
             <span className="reading-header-meta"> · Juz {centeredVerseData?.juz_number || '-'} / Hizb {centeredVerseData?.hizb_number || '-'}</span>
           </div>
-          <div className="header-right-controls">
+          <div className="header-right-controls" ref={userMenuRef}>
             <button
               className="settings-trigger"
               type="button"
@@ -4236,13 +6142,52 @@ export default function App() {
             <button
               className="user-trigger"
               type="button"
-              onClick={() => {
-                setIsDrawerOpen(false);
-                setActivePage('profile');
-              }}
+              aria-haspopup="menu"
+              aria-expanded={isUserMenuOpen}
+              onClick={() => setIsUserMenuOpen((current) => !current)}
             >
               {headerProfileName}
             </button>
+            {isUserMenuOpen ? (
+              <div className="user-dropdown-menu" role="menu" aria-label="Profile navigation">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsUserMenuOpen(false);
+                    setIsDrawerOpen(false);
+                    setProfileTab('stats');
+                    setActivePage('profile');
+                  }}
+                >
+                  <span aria-hidden="true">📊</span>
+                  <span>Dashboard</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsUserMenuOpen(false);
+                    setIsDrawerOpen(false);
+                    setProfileTab('groups');
+                    setActivePage('profile');
+                  }}
+                >
+                  <span aria-hidden="true">👥</span>
+                  <span>Groups</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    openKhatmahMode();
+                  }}
+                >
+                  <span aria-hidden="true">📖</span>
+                  <span>Khatmah Mode</span>
+                </button>
+              </div>
+            ) : null}
           </div>
         </header> : null}
 
@@ -4280,12 +6225,19 @@ export default function App() {
             <div className="verses-wrap">
               {verses.map((verse) => {
                 const verseId = getVerseId(verse);
+                const verseNumber =
+                  Number.parseInt(String(verse?.verse_number || ''), 10) ||
+                  parseVerseKeyParts(String(verse?.verse_key || '')).ayah ||
+                  0;
+                const liveThisState = liveThisByVerse[verseId] || null;
+                const liveThisParts = liveThisState?.response ? parseLiveThisResponse(liveThisState.response) : null;
+                const interactiveWords = buildInteractiveWords(verse);
+                const ornamentText = `۝${toArabicIndicNumber(verseNumber)}`;
                 const translation =
                   verse.translations?.[0]?.text ||
                   verse.translations?.[0]?.translation ||
                   verse.translation?.text ||
                   '';
-                const interactiveWords = buildInteractiveWords(verse);
                 const isBookmarked = bookmarks.has(verseId);
 
                 return (
@@ -4293,7 +6245,7 @@ export default function App() {
                     key={verseId}
                     className={`verse-card ${todaysActions.read.has(verseId) ? 'is-read' : ''} ${
                       isAudioPlaying && currentAudio?.verseId === verseId ? 'is-playing' : ''
-                    }`}
+                    } ${glowingVerseId === String(verseId) ? 'is-glowing' : ''}`}
                     ref={(node) => assignVerseRef(verseId, node)}
                     data-verse-id={verseId}
                   >
@@ -4347,13 +6299,23 @@ export default function App() {
                               <span
                                 key={`${verseId}-${word.id || index}`}
                                 data-word-index={index}
-                                className={`arabic-word-segment ${hoveredWord?.verseId === String(verseId) && hoveredWord?.wordIndex === index ? 'hovered' : ''}`}
+                                className={`arabic-word-segment ${(hoveredWord?.verseId === String(verseId) && hoveredWord?.wordIndex === index) || hoveredOrnamentVerseId === String(verseId) ? 'hovered' : ''} ${activeAudioWord?.verseId === String(verseId) && activeAudioWord?.wordIndex === index ? 'word-active' : ''}`}
                               >
                                 {word.text_uthmani}
                                 {index < interactiveWords.length - 1 ? ' ' : ''}
                               </span>
                             ))
-                          : verse.text_uthmani}
+                          : String(verse?.text_uthmani || '').trim()}
+                        {' '}
+                        <span
+                          className="verse-ornament"
+                          aria-label={`Verse ${verseNumber}`}
+                          onClick={(event) => handleOrnamentClick(verse, event)}
+                          onMouseEnter={(event) => handleOrnamentMouseEnter(verse, event)}
+                          onMouseLeave={handleOrnamentMouseLeave}
+                        >
+                          {ornamentText}
+                        </span>
                       </span>
                     </div>
 
@@ -4383,6 +6345,15 @@ export default function App() {
                         <span aria-hidden="true">📖</span>
                         <span>Tafsir</span>
                       </button>
+                      <button
+                        className={`tafsir-link-btn live-this-btn ${liveThisState?.expanded ? 'active' : ''}`}
+                        type="button"
+                        data-tooltip="Live with this Verse"
+                        onClick={() => toggleLiveThis(verse)}
+                        aria-label="Live with this verse"
+                      >
+                        <span>✦ Live this</span>
+                      </button>
                     </div>
 
                     {expandedTafsir[verseId] ? (
@@ -4396,13 +6367,37 @@ export default function App() {
                       />
                     ) : null}
 
+                    {liveThisState?.expanded ? (
+                      <div className="tafsir-box live-this-box" aria-live="polite">
+                        {liveThisState.loading ? (
+                          <p className="live-this-loading">Generating one practical action...</p>
+                        ) : liveThisState.error ? (
+                          <p className="live-this-error">{liveThisState.error}</p>
+                        ) : liveThisParts ? (
+                          <div className="live-this-content">
+                            <p>
+                              <strong>Action:</strong> {liveThisParts.action || 'No action available.'}
+                            </p>
+                            <p>
+                              <strong>Why:</strong> {liveThisParts.why || 'No explanation available.'}
+                            </p>
+                            <p>
+                              <strong>Example:</strong> {liveThisParts.example || 'No example available.'}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="live-this-error">No action returned yet.</p>
+                        )}
+                      </div>
+                    ) : null}
+
                   </article>
                 );
               })}
             </div>
             </div>
           </>
-        ) : (
+        ) : activePage === 'profile' ? (
           <section className="profile-dashboard">
             <button
               type="button"
@@ -4483,6 +6478,12 @@ export default function App() {
                 <span>Total Days Read</span>
                 <strong>{totalDaysRead}</strong>
               </article>
+              {isPublicAccount ? (
+                <article className="profile-stat-tile">
+                  <span>Shared to Community</span>
+                  <strong>{sharedReflectionCount} reflections</strong>
+                </article>
+              ) : null}
             </section>
 
             <section className="khatm-projector-card" aria-live="polite">
@@ -4514,6 +6515,51 @@ export default function App() {
                   ) : null}
                 </>
               )}
+            </section>
+
+            <section className="khatmah-journey-card" aria-live="polite">
+              <div className="khatmah-journey-head">
+                <h3>Khatmah Journey</h3>
+                <span>{khatmahProgressPercent.toFixed(1)}%</span>
+              </div>
+              <p className="khatmah-journey-progress-label">
+                Khatmah Progress: {khatmahProgressCount} / {TOTAL_QURAN_VERSES} verses
+              </p>
+              <div className="khatmah-journey-track" aria-hidden="true">
+                <div className="khatmah-journey-fill" style={{ width: `${khatmahProgressPercent}%` }} />
+              </div>
+              <div className="khatmah-journey-stats">
+                <span>Accepted: {khatmahAcceptedCount}</span>
+                <span>Skipped: {khatmahSkippedCount}</span>
+                <span>Done: {khatmahDoneCount}</span>
+              </div>
+              <button
+                type="button"
+                className="profile-auth-btn"
+                onClick={() => {
+                    openKhatmahMode({ directStart: true });
+                }}
+              >
+                Continue Khatmah
+              </button>
+            </section>
+
+            <section className="quran-map-card" aria-live="polite">
+              <div className="quran-map-head">
+                <h3>Your Quran Map</h3>
+                <small>{quranMapReadCount} read</small>
+              </div>
+              <div className="quran-map-grid" role="img" aria-label="Quran surah coverage map">
+                {quranMapSquares.map((square) => (
+                  <span
+                    key={`quran-map-${square.surahId}`}
+                    className={`quran-map-cell ${square.level}`}
+                    title={`Surah ${square.surahId}`}
+                    aria-hidden="true"
+                  />
+                ))}
+              </div>
+              <p className="quran-map-caption">You have read {quranMapReadCount} of 114 surahs</p>
             </section>
 
             <section className="wird-ring-section" aria-live="polite">
@@ -4821,6 +6867,219 @@ export default function App() {
               </section>
             )}
           </section>
+        ) : (
+          <section className="khatmah-mode-shell">
+            <button
+              type="button"
+              className="profile-back-btn"
+              onClick={() => {
+                setActivePage('reader');
+              }}
+            >
+              ← Back to Reading
+            </button>
+
+            {!khatmahSurahId || !khatmahVerses.length ? (
+              <section className="khatmah-welcome-card">
+                <h2>Khatmah Mode</h2>
+                <p>
+                  The companions of the Prophet ﷺ would not move past a verse until they implemented it into their lives.
+                  This mode invites you to read the Quran the way they did — slowly, intentionally, and with action.
+                </p>
+                <div className="khatmah-interval-picker">
+                  <strong>How often would you like an action challenge?</strong>
+                  <div className="khatmah-interval-options" role="group" aria-label="Khatmah checkpoint interval">
+                    {KHATMAH_INTERVAL_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`khatmah-interval-pill ${khatmahInterval === option.id ? 'active' : ''}`}
+                        onClick={() => setKhatmahInterval(option.id)}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {hasKhatmahResumePoint ? (
+                  <p className="khatmah-resume-copy">Resume your Khatmah from {khatmahResumeLabel}.</p>
+                ) : null}
+                {khatmahError ? <p className="group-error-text">{khatmahError}</p> : null}
+                <button type="button" className="profile-auth-btn" onClick={beginKhatmah} disabled={isKhatmahLoading}>
+                  {isKhatmahLoading ? 'Loading...' : hasKhatmahResumePoint ? 'Resume Your Khatmah' : 'Begin Your Khatmah'}
+                </button>
+              </section>
+            ) : (
+              <>
+                <section className="khatmah-reader-card">
+                  <div className="khatmah-progress-row">
+                    <strong>Khatmah Progress: {khatmahProgressCount} / {TOTAL_QURAN_VERSES} verses</strong>
+                    <span>{khatmahProgressPercent.toFixed(1)}%</span>
+                  </div>
+                  <div className="khatmah-progress-track" aria-hidden="true">
+                    <div className="khatmah-progress-fill" style={{ width: `${khatmahProgressPercent}%` }} />
+                  </div>
+                  <div className="khatmah-surah-head">
+                    <strong>{khatmahCurrentSurah?.name_simple || `Surah ${khatmahSurahId}`}</strong>
+                    <span dir="rtl" lang="ar" translate="no">{khatmahCurrentSurah?.name_arabic || ''}</span>
+                  </div>
+                  <p className="khatmah-checkpoint-counter">
+                    Verses since last checkpoint: {versesSinceLastCheckpoint} / {selectedKhatmahIntervalTarget}
+                  </p>
+                  <p className="khatmah-checkpoint-counter">
+                    Current verse: {String(khatmahCurrentTrackedVerse?.verse_key || khatmahProgressState.verseKey || '1:1')}
+                  </p>
+                  <p className="khatmah-checkpoint-counter">
+                    Showing verses {Math.min(khatmahWindowStartIndex + 1, khatmahVerses.length)}-
+                    {Math.min(khatmahWindowStartIndex + 10, khatmahVerses.length)} of {khatmahVerses.length}
+                  </p>
+
+                  <div className="khatmah-verses-list">
+                    {khatmahVisibleWindow.map(({ verse, index }) => {
+                      const translation = getKhatmahVerseTranslation(verse);
+                      return (
+                        <article
+                          key={String(verse?.id || verse?.verse_key || index)}
+                          className="khatmah-verse-item"
+                          data-khatmah-index={index}
+                          data-khatmah-verse-key={String(verse?.verse_key || '')}
+                        >
+                          <div className="khatmah-verse-badge">{String(verse?.verse_key || '')}</div>
+                          <p className="khatmah-verse-ar" dir="rtl" lang="ar" translate="no">
+                            {String(verse?.text_uthmani || '')}
+                            <span className="khatmah-ayah-end"> {buildKhatmahVerseEnding(verse)}</span>
+                          </p>
+                          <p
+                            className="khatmah-verse-translation"
+                            dangerouslySetInnerHTML={{ __html: translation || 'Translation unavailable.' }}
+                          />
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  {khatmahTransition ? (
+                    <article className="khatmah-transition-card khatmah-transition-bottom">
+                      <h3>{khatmahTransition.completed ? 'Khatmah Completed' : 'Next Surah Ready'}</h3>
+                      {khatmahTransition.completed ? (
+                        <p>You have completed your Khatmah journey. May Allah accept it from you.</p>
+                      ) : (
+                        <>
+                          <p className="khatmah-transition-en">{khatmahTransition.nameSimple}</p>
+                          <p className="khatmah-transition-ar" dir="rtl" lang="ar" translate="no">{khatmahTransition.nameArabic}</p>
+                          <p>{khatmahTransition.versesCount} verses</p>
+                          <button type="button" className="profile-auth-btn" onClick={continueToNextKhatmahSurah}>
+                            Continue
+                          </button>
+                        </>
+                      )}
+                    </article>
+                  ) : null}
+
+                  {khatmahError ? <p className="group-error-text">{khatmahError}</p> : null}
+                </section>
+
+                <section className="khatmah-log-section">
+                  <h3>My Living Quran</h3>
+                  {livingQuranLog.length === 0 ? (
+                    <p className="recent-reflection-empty">No challenges yet. Accept a challenge to begin your living log.</p>
+                  ) : (
+                    <div className="khatmah-log-list">
+                      {livingQuranLog.map((entry) => {
+                        const status = String(entry?.status || 'active');
+                        const isDone = status === 'done';
+                        const isSkipped = status === 'skipped';
+                        return (
+                          <article key={String(entry?.id || Math.random())} className="khatmah-log-card">
+                            <div className="khatmah-log-top">
+                              <strong>{entry?.verseRange || ''}</strong>
+                              <span className={`khatmah-status ${isDone ? 'done' : isSkipped ? 'skipped' : 'active'}`}>
+                                {isDone ? '✓ Done' : isSkipped ? 'Skipped' : '● Active'}
+                              </span>
+                            </div>
+                            <p className="khatmah-log-theme">{entry?.theme || ''}</p>
+                            <h4>{entry?.challengeTitle || ''}</h4>
+                            <p>{entry?.challengeBody || ''}</p>
+                            <small>Accepted: {entry?.acceptedDate || ''}</small>
+                            {status === 'active' ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="profile-auth-btn"
+                                  onClick={() => markLivingChallengeDone(entry?.id)}
+                                >
+                                  Mark as done
+                                </button>
+                                <textarea
+                                  className="journal-answer-input"
+                                  placeholder="How did this go? Write your experience..."
+                                  value={String(entry?.reflection || '')}
+                                  onChange={(event) => updateLivingChallengeReflection(entry?.id, event.target.value)}
+                                />
+                              </>
+                            ) : null}
+                            {isDone && entry?.reflection ? (
+                              <p className="khatmah-log-reflection">{entry.reflection}</p>
+                            ) : null}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+
+                {khatmahGate.open ? (
+                  <div className="khatmah-gate-overlay" role="dialog" aria-modal="true" aria-label="Khatmah action gate">
+                    <section className="khatmah-gate-card">
+                      <p className="khatmah-gate-range">Verses [{String(khatmahGate.verseRange || '').replace(' - ', ' — ')}]</p>
+                      <h3>{khatmahGate.theme || 'Reflect and act'}</h3>
+                      <div className="khatmah-gate-challenge-list">
+                        {(khatmahGate.challenges?.length ? khatmahGate.challenges : [{
+                          title: 'Live one verse today',
+                          body: 'Choose one practical action from these verses and complete it today.',
+                        }]).map((challenge, index) => {
+                          const accepted = Array.isArray(khatmahGate.acceptedIndexes) && khatmahGate.acceptedIndexes.includes(index);
+                          return (
+                            <article key={`gate-challenge-${index}`} className="khatmah-gate-challenge">
+                              <h4>{challenge.title}</h4>
+                              <p>{challenge.body}</p>
+                              <button
+                                type="button"
+                                className={`khatmah-accept-btn ${accepted ? 'accepted' : ''}`}
+                                onClick={() => toggleGateChallengeAccepted(index)}
+                                disabled={khatmahGate.loading}
+                              >
+                                {accepted ? 'Accepted' : 'Accept'}
+                              </button>
+                            </article>
+                          );
+                        })}
+                      </div>
+                      {khatmahGate.error ? <p className="group-error-text">{khatmahGate.error}</p> : null}
+                      <div className="khatmah-gate-actions">
+                        <button
+                          type="button"
+                          className="profile-auth-btn"
+                          onClick={() => unlockKhatmahAfterGate({ skipAll: false })}
+                          disabled={khatmahGate.loading}
+                        >
+                          Continue reading
+                        </button>
+                        <button
+                          type="button"
+                          className="khatmah-skip-link"
+                          onClick={() => unlockKhatmahAfterGate({ skipAll: true })}
+                          disabled={khatmahGate.loading}
+                        >
+                          Skip all for now
+                        </button>
+                      </div>
+                    </section>
+                  </div>
+                ) : null}
+              </>
+            )}
+          </section>
         )}
       </section>
 
@@ -4905,7 +7164,7 @@ export default function App() {
                 <section className="audio-menu-section">
                   <h4>Reciter</h4>
                   <div className="audio-menu-reciter-list">
-                    {DEFAULT_RECITER_OPTIONS.map((option) => {
+                    {reciterOptions.map((option) => {
                       const selected = selectedReciterId === option.id;
                       return (
                         <button
@@ -4964,10 +7223,14 @@ export default function App() {
           ref={audioRef}
           preload="none"
           onPlay={() => setIsAudioPlaying(true)}
-          onPause={() => setIsAudioPlaying(false)}
+          onPause={() => {
+            setIsAudioPlaying(false);
+            setActiveAudioWord(null);
+          }}
           onEnded={async () => {
             setIsAudioPlaying(false);
             setAudioProgress(100);
+            setActiveAudioWord(null);
 
             if (hasNextVerse) {
               await transitionToVerseByIndex(currentVerseIndex + 1, { preferPrefetched: true });
@@ -5166,7 +7429,7 @@ export default function App() {
 
                   <article className="voice-mirror-panel">
                     <h4>Reciter</h4>
-                    <p className="voice-mirror-reciter-name">Mishary Rashid Al-Afasy</p>
+                    <p className="voice-mirror-reciter-name">{selectedReciterLabel}</p>
                     <button type="button" className="voice-mirror-play voice-mirror-play-large" onClick={toggleVoiceMirrorReciterAudio}>
                       {isVoiceMirrorReciterPlaying ? 'Pause' : 'Play'}
                     </button>
@@ -5241,44 +7504,174 @@ export default function App() {
         <div className="journal-overlay" onClick={() => setReflectionModal(null)}>
           <section className="journal-modal" onClick={(event) => event.stopPropagation()}>
             <header className="journal-modal-header">
-              <strong>{reflectionModal.verseKey}</strong>
+              <div className="journal-modal-title-wrap">
+                <strong>{journalViewTab === 'mine' ? reflectionModal.verseKey : 'Community Feed'}</strong>
+                <span>{journalViewTab === 'mine' ? 'My Reflections' : 'Public reflections from the community'}</span>
+              </div>
               <button type="button" className="journal-close" onClick={() => setReflectionModal(null)}>
                 ✕
               </button>
             </header>
 
-            <p className="journal-verse-ar" dir="rtl" lang="ar" translate="no">
-              {reflectionModal.verseText}
-            </p>
-
-            <textarea
-              className="journal-answer-input"
-              placeholder="Write your reflection here..."
-              value={reflectionModal.answer || ''}
-              onChange={(event) => {
-                const nextAnswer = event.target.value;
-                setReflectionModal((current) => {
-                  if (!current) {
-                    return current;
-                  }
-
-                  return {
-                    ...current,
-                    answer: nextAnswer,
-                    date: new Date().toISOString(),
-                  };
-                });
-              }}
-            />
-
-            <div className="journal-actions">
-              <button type="button" className="journal-save" onClick={saveReflectionEntry}>
-                Save
+            <div className="journal-modal-tabs" role="tablist" aria-label="Journal views">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={journalViewTab === 'mine'}
+                className={journalViewTab === 'mine' ? 'active' : ''}
+                onClick={() => setJournalViewTab('mine')}
+              >
+                My Reflections
               </button>
-              <button type="button" className="journal-cancel" onClick={() => setReflectionModal(null)}>
-                Close
+              <button
+                type="button"
+                role="tab"
+                aria-selected={journalViewTab === 'community'}
+                className={journalViewTab === 'community' ? 'active' : ''}
+                onClick={() => setJournalViewTab('community')}
+              >
+                Community
               </button>
             </div>
+
+            {journalViewTab === 'mine' ? (
+              <>
+                <p className="journal-verse-ar" dir="rtl" lang="ar" translate="no">
+                  {reflectionModal.verseText}
+                </p>
+
+                <textarea
+                  className="journal-answer-input"
+                  placeholder="Write your reflection here..."
+                  value={reflectionModal.answer || ''}
+                  onChange={(event) => {
+                    const nextAnswer = event.target.value;
+                    setReflectionModal((current) => {
+                      if (!current) {
+                        return current;
+                      }
+
+                      return {
+                        ...current,
+                        answer: nextAnswer,
+                        date: new Date().toISOString(),
+                      };
+                    });
+                  }}
+                />
+
+                <div className="journal-actions">
+                  <button type="button" className="journal-save" onClick={saveReflectionEntry}>
+                    Save
+                  </button>
+                  {isSavedReflection ? (
+                    <button
+                      type="button"
+                      className={`journal-share ${isReflectionShared || accountPrivacy !== 'public' ? 'disabled' : ''}`}
+                      onClick={handleShareReflectionToCommunity}
+                      disabled={isSharingReflection || isReflectionShared || accountPrivacy !== 'public'}
+                      title={
+                        accountPrivacy === 'public'
+                          ? ''
+                          : 'Set your account to public in settings to share reflections'
+                      }
+                    >
+                      {isReflectionShared ? 'Shared' : isSharingReflection ? 'Sharing...' : 'Share to Community'}
+                    </button>
+                  ) : null}
+                  <button type="button" className="journal-cancel" onClick={() => setReflectionModal(null)}>
+                    Close
+                  </button>
+                </div>
+
+                {isSavedReflection && reflectionShareNotice ? (
+                  <p className="journal-share-notice">{reflectionShareNotice}</p>
+                ) : null}
+              </>
+            ) : (
+              <section className="community-feed-panel" aria-live="polite">
+                <div className="community-feed-head">
+                  <button
+                    type="button"
+                    className="community-refresh-btn"
+                    onClick={() =>
+                      fetchCommunityReflections({ verseKey: String(reflectionModal?.verseKey || '').trim() })
+                    }
+                    disabled={isCommunityLoading}
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                {isCommunityLoading ? <div className="community-loading-spinner" aria-label="Loading" /> : null}
+                {communityFeedError ? <p className="community-feed-error">{communityFeedError}</p> : null}
+
+                {!isCommunityLoading && communityReflections.length === 0 ? (
+                  <p className="community-feed-empty">No community reflections yet — be the first to share yours</p>
+                ) : (
+                  <div className="community-feed-list" role="list">
+                    {communityReflections.map((item) => {
+                      const reflectionId = String(item?.id || '');
+                      const likedBy = Array.isArray(item?.likedBy) ? item.likedBy.map((value) => String(value)) : [];
+                      const likedByCurrentUser = likedBy.includes(reflectionActor.userId);
+                      const isOwnedByCurrentUser = Boolean(
+                        authSession.loggedIn && currentUserId && String(item?.userId || '') === currentUserId
+                      );
+                      const isExpanded = Boolean(expandedCommunityItems[reflectionId]);
+
+                      return (
+                        <article key={reflectionId || `${item?.verseKey}-${item?.date}`} className="community-feed-card" role="listitem">
+                          <div className="community-card-top">
+                            <strong>{item?.userName || 'Member'}</strong>
+                            <span>{item?.date ? new Date(item.date).toLocaleDateString() : ''}</span>
+                          </div>
+
+                          <span className="community-verse-pill">{item?.verseKey || ''}</span>
+
+                          <p className="community-verse-ar" dir="rtl" lang="ar" translate="no">
+                            {item?.verseText || ''}
+                          </p>
+
+                          <p className={`community-answer ${isExpanded ? 'expanded' : ''}`}>
+                            {item?.answer || ''}
+                          </p>
+                          <button
+                            type="button"
+                            className="community-read-more"
+                            onClick={() => toggleCommunityReflectionExpanded(reflectionId)}
+                          >
+                            {isExpanded ? 'Show less' : 'Read more'}
+                          </button>
+
+                          <div className="community-card-bottom">
+                            <button
+                              type="button"
+                              className={`community-like-btn ${likedByCurrentUser ? 'liked' : ''}`}
+                              onClick={() => toggleCommunityLike(reflectionId)}
+                            >
+                              <span aria-hidden="true">♥</span>
+                              <span>{Number(item?.likes || likedBy.length || 0)}</span>
+                            </button>
+
+                            {isOwnedByCurrentUser ? (
+                              <button
+                                type="button"
+                                className="community-delete-btn"
+                                onClick={() => deleteCommunityReflection(reflectionId)}
+                                aria-label="Delete reflection"
+                                title="Delete reflection"
+                              >
+                                🗑
+                              </button>
+                            ) : null}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            )}
           </section>
         </div>
       ) : null}
@@ -5327,6 +7720,24 @@ export default function App() {
                     <option value="Sister">Sister</option>
                   </select>
                 </label>
+
+                <section className="settings-subsection">
+                  <h4>Account Privacy</h4>
+                  <label className="setting-row" htmlFor="account-privacy-toggle">
+                    <span>{isPublicAccount ? 'Public account' : 'Private account'}</span>
+                    <input
+                      id="account-privacy-toggle"
+                      type="checkbox"
+                      checked={isPublicAccount}
+                      onChange={(event) => setAccountPrivacy(event.target.checked ? 'public' : 'private')}
+                    />
+                  </label>
+                  <p className="settings-note-text">
+                    {isPublicAccount
+                      ? 'Public account — your reflections can be shared to the community feed.'
+                      : 'Private account — your reflections are only visible to you.'}
+                  </p>
+                </section>
               </div>
             ) : (
               <div className="settings-panel">
@@ -5385,7 +7796,133 @@ export default function App() {
             top: `${wordTooltip.y - 32}px`,
           }}
         >
-          {wordTooltip.text}
+          <p className="word-tooltip-meaning">{wordTooltip.text}</p>
+          <button type="button" className="word-tooltip-unseal-btn" onClick={openUnsealedWordPanel}>
+            Unseal this word ✦
+          </button>
+        </div>
+      ) : null}
+
+      {unsealedWordPanel ? (
+        <div className="unsealed-sheet-overlay" onClick={closeUnsealedWordPanel}>
+          <section
+            className="unsealed-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Quran Unsealed"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="unsealed-sheet-header">
+              <div className="unsealed-word-meta">
+                <h3>{unsealedWordPanel.arabicWord}</h3>
+                {unsealedWordPanel.pronunciation ? <span>{unsealedWordPanel.pronunciation}</span> : null}
+                {unsealedWordPanel.root ? <small>Root: {unsealedWordPanel.root}</small> : null}
+              </div>
+              <button type="button" className="unsealed-sheet-close" onClick={closeUnsealedWordPanel} aria-label="Close">
+                ✕
+              </button>
+            </header>
+
+            {!unsealedWordPanel.loading && !unsealedWordPanel.error && unsealedWordPanel.analysis ? (
+              <div className="unsealed-stats-row" aria-label="Word statistics">
+                <span className="unsealed-stat-pill teal">
+                  {Number(unsealedWordPanel.analysis.totalOccurrences || 0) > 0
+                    ? `${unsealedWordPanel.analysis.totalOccurrences} occurrences`
+                    : 'Occurrences unknown'}
+                </span>
+                <span className="unsealed-stat-pill navy">
+                  {unsealedWordPanel.analysis.mostCommonSurah
+                    ? `Most in ${unsealedWordPanel.analysis.mostCommonSurah}`
+                    : 'Most in Unknown'}
+                </span>
+                <span className="unsealed-stat-pill amber">
+                  {unsealedWordPanel.analysis.makkiOrMadani || 'Balance unknown'}
+                </span>
+              </div>
+            ) : null}
+
+            {unsealedWordPanel.loading ? (
+              <div className="unsealed-loading-state" aria-live="polite" aria-busy="true">
+                <div className="unsealed-shimmer-line" />
+                <div className="unsealed-shimmer-line w-90" />
+                <div className="unsealed-shimmer-line w-65" />
+                <div className="unsealed-shimmer-block" />
+                <div className="unsealed-shimmer-line w-75" />
+                <div className="unsealed-shimmer-line w-85" />
+              </div>
+            ) : null}
+
+            {!unsealedWordPanel.loading && unsealedWordPanel.error ? (
+              <p className="unsealed-error-text">{unsealedWordPanel.error}</p>
+            ) : null}
+
+            {!unsealedWordPanel.loading && !unsealedWordPanel.error && unsealedWordPanel.analysis ? (
+              <div className="unsealed-content">
+                <section className="unsealed-section">
+                  <h4>
+                    <span aria-hidden="true">🫀</span>
+                    Why this word here?
+                  </h4>
+                  <p>{renderWhyThisWordText(unsealedWordPanel.analysis.whyThisWord)}</p>
+                </section>
+
+                <section className="unsealed-section">
+                  <h4>
+                    <span aria-hidden="true">📖</span>
+                    Core meaning of the root
+                  </h4>
+                  <p>{unsealedWordPanel.analysis.coreMeaning || 'No root meaning available yet.'}</p>
+                </section>
+
+                <section className="unsealed-section">
+                  <h4>
+                    <span aria-hidden="true">🌍</span>
+                    Across the Quran
+                  </h4>
+                  {Array.isArray(unsealedWordPanel.analysis.acrossQuran) && unsealedWordPanel.analysis.acrossQuran.length ? (
+                    <div className="unsealed-across-list">
+                      {unsealedWordPanel.analysis.acrossQuran.map((item) => (
+                        <button
+                          type="button"
+                          key={`${item.verseKey}-${item.quote}`}
+                          className="unsealed-across-card"
+                          onClick={() => jumpToAcrossQuranVerse(item.verseKey)}
+                        >
+                          <strong>{item.verseKey}</strong>
+                          <p dir="rtl" lang="ar" translate="no">{item.quote}</p>
+                          <small>{item.context}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p>No additional occurrences found.</p>
+                  )}
+                </section>
+
+                <section className="unsealed-section">
+                  <h4>
+                    <span aria-hidden="true">🌱</span>
+                    What this changes in the verse
+                  </h4>
+                  <p>{unsealedWordPanel.analysis.whatChanges || 'No additional insight available yet.'}</p>
+                </section>
+              </div>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+
+      {ornamentVersePreview ? (
+        <div
+          className="ornament-preview-card"
+          style={{
+            left: `${Math.max(24, ornamentVersePreview.x - 280)}px`,
+            top: `${Math.max(24, ornamentVersePreview.y - 210)}px`,
+          }}
+        >
+          <strong>{ornamentVersePreview.verseKey}</strong>
+          <p dir="rtl" lang="ar" translate="no">{ornamentVersePreview.verseText}</p>
+          <small>{ornamentVersePreview.translation || 'No translation found.'}</small>
         </div>
       ) : null}
     </main>

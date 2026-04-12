@@ -12,6 +12,8 @@ const sdk = require('microsoft-cognitiveservices-speech-sdk');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
+const { stripDiacritics, unsealedWords } = require('./unsealedWords');
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -32,13 +34,17 @@ const OAUTH_SCOPES =
 const SESSION_SECRET = process.env.SESSION_SECRET || 'tilawah-session-secret-2026';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = 'gemini-2.0-flash';
+const GROQ_API_KEY = String(process.env.GROQ_API_KEY || '').trim();
 const AZURE_SPEECH_KEY = String(process.env.AZURE_SPEECH_KEY || '').trim();
 const AZURE_SPEECH_REGION = String(process.env.AZURE_SPEECH_REGION || '').trim();
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 const GROUPS_FILE_PATH = path.resolve(__dirname, '../data/groups.json');
+const REFLECTIONS_FILE_PATH = path.resolve(__dirname, '../data/reflections.json');
+const unsealedWordAnalysisCache = new Map();
 
 function getTodayDateKey() {
   return new Date().toISOString().slice(0, 10);
@@ -50,6 +56,15 @@ async function ensureGroupsFile() {
     await fs.access(GROUPS_FILE_PATH);
   } catch {
     await fs.writeFile(GROUPS_FILE_PATH, '[]\n', 'utf8');
+  }
+}
+
+async function ensureReflectionsFile() {
+  await fs.mkdir(path.dirname(REFLECTIONS_FILE_PATH), { recursive: true });
+  try {
+    await fs.access(REFLECTIONS_FILE_PATH);
+  } catch {
+    await fs.writeFile(REFLECTIONS_FILE_PATH, '[]\n', 'utf8');
   }
 }
 
@@ -67,6 +82,22 @@ async function readGroups() {
 async function writeGroups(groups) {
   await ensureGroupsFile();
   await fs.writeFile(GROUPS_FILE_PATH, `${JSON.stringify(groups, null, 2)}\n`, 'utf8');
+}
+
+async function readReflections() {
+  await ensureReflectionsFile();
+  try {
+    const raw = await fs.readFile(REFLECTIONS_FILE_PATH, 'utf8');
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeReflections(reflections) {
+  await ensureReflectionsFile();
+  await fs.writeFile(REFLECTIONS_FILE_PATH, `${JSON.stringify(reflections, null, 2)}\n`, 'utf8');
 }
 
 function generateGroupCode(existingCodes) {
@@ -101,6 +132,24 @@ function isGeminiBusyError(error) {
   );
 }
 
+function isGeminiQuotaError(error) {
+  const status = Number(error?.status || error?.response?.status || 0);
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    status === 429 ||
+    message.includes('quota exceeded') ||
+    message.includes('too many requests') ||
+    message.includes('billing') ||
+    message.includes('rate-limit')
+  );
+}
+
+function isGroqRateLimitError(error) {
+  const status = Number(error?.status || error?.response?.status || 0);
+  const message = String(error?.message || '').toLowerCase();
+  return status === 429 || message.includes('rate limit') || message.includes('too many requests');
+}
+
 async function callGeminiWithRetry(model, prompt, generationConfig = {}, retries = 2) {
   let lastError = null;
 
@@ -132,6 +181,31 @@ async function generateWithGemini(prompt, generationConfig = {}) {
   return callGeminiWithRetry(model, prompt, generationConfig, 2);
 }
 
+async function generateWithGroq(prompt, { maxTokens = 900, temperature = 0.35 } = {}) {
+  if (!groq) {
+    throw new Error('GROQ_API_KEY is not configured');
+  }
+
+  const completion = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    max_tokens: maxTokens,
+    temperature,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are a Quran Arabic linguistics guide. Return strict JSON only. Do not include markdown, commentary, or code fences.',
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
+  });
+
+  return String(completion?.choices?.[0]?.message?.content || '').trim();
+}
+
 function buildFallbackReflectionQuestion(verseKey, translation) {
   const cleanedTranslation = String(translation || '').replace(/\s+/g, ' ').trim();
   const preview = cleanedTranslation.length > 120 ? `${cleanedTranslation.slice(0, 117)}...` : cleanedTranslation;
@@ -141,6 +215,257 @@ function buildFallbackReflectionQuestion(verseKey, translation) {
   }
 
   return `What does verse ${verseKey} stir in your heart right now? What is one small, sincere response you can make today?`;
+}
+
+function normalizeSurahName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function isRevelationTimingQuestion(text) {
+  const normalized = String(text || '').toLowerCase();
+  return (
+    /(when|what time|which period).*(surah|sura|chapter|this surah|it).*(revealed|sent|came|descend)/.test(normalized) ||
+    /(surah|sura|chapter|this surah|it).*(revealed|sent|came|descend).*(when|to the prophet)/.test(normalized) ||
+    /(makki|makkan|meccan|madani|medinan|asbab|occasion of revelation|nuzul|revelation context)/.test(normalized)
+  );
+}
+
+function getRevelationTimingReply(currentSurah) {
+  const surah = String(currentSurah || '').trim();
+  const normalized = normalizeSurahName(surah);
+
+  const known = [
+    {
+      aliases: ['alfatihah', 'fatiha', 'fatihah'],
+      reply:
+        'Most scholars classify Al-Fatihah as Makki (revealed in Makkah, early period). Some narrations mention Madani transmission, but the common view is Makki. Its role as the opening surah made it central in worship from the earliest phase.',
+    },
+    {
+      aliases: ['albaqarah', 'baqarah'],
+      reply:
+        'Al-Baqarah is Madani, revealed after the Hijrah in Madinah across an extended period. It addresses building a Muslim community with law, worship, ethics, and social guidance.',
+    },
+    {
+      aliases: ['aliimran', 'alimran', 'imran'],
+      reply:
+        'Ali Imran is generally classified as Madani. It came in the Madinah period and speaks to faith, steadfastness, and engagement with People of the Book in that community context.',
+    },
+  ];
+
+  const match = known.find((entry) => entry.aliases.some((alias) => normalized.includes(alias)));
+  if (match) {
+    return match.reply;
+  }
+
+  return `Good question. I don't want to guess about revelation timing for ${surah || 'this surah'}. If you tell me the exact surah name, I can give you a concise Makki/Madani answer with brief context.`;
+}
+
+function buildDeterministicCompanionReply({ currentSurah, userMessage }) {
+  const question = String(userMessage || '').trim().toLowerCase();
+  const contextLabel = currentSurah || 'this surah';
+  if (!question) {
+    return '';
+  }
+
+  const compact = question.replace(/\s+/g, ' ').trim();
+  const greetingPatterns = [/^hi\b/, /^hello\b/, /^hey\b/, /salaam|salam|as[-\s]*salamu/];
+  if (greetingPatterns.some((pattern) => pattern.test(compact))) {
+    return `Wa alaykum as-salam. I'm glad you're here. You're in ${contextLabel} right now, so if you want I can give a quick meaning, context, or one gentle action from the verse.`;
+  }
+
+  if (/how are you|how r u|how's it going/.test(compact)) {
+    return `Alhamdulillah, I'm here with you. How are you feeling with ${contextLabel} so far — would you like meaning, context, or one practical takeaway for today?`;
+  }
+
+  if (/^thanks\b|^thank you\b|jazak|جزاك/.test(compact)) {
+    return `You're most welcome. If you want, send me a short question from ${contextLabel} and I'll keep the answer simple and useful.`;
+  }
+
+  if (isRevelationTimingQuestion(question)) {
+    return getRevelationTimingReply(currentSurah);
+  }
+
+  return '';
+}
+
+function buildFallbackCompanionReply({ currentSurah, currentVerse, userMessage, surahVerses = [] }) {
+  const contextLabel = `${currentSurah || 'this surah'}${currentVerse ? ` (${currentVerse})` : ''}`;
+  const question = String(userMessage || '').trim().toLowerCase();
+  const compact = question.replace(/\s+/g, ' ').trim();
+
+  function extractRequestedVerseNumber(inputText) {
+    const patterns = [
+      /verse\s*number\s*(\d+)/i,
+      /verse\s*(\d+)/i,
+      /ayah\s*number\s*(\d+)/i,
+      /ayah\s*(\d+)/i,
+      /ayat\s*number\s*(\d+)/i,
+      /ayat\s*(\d+)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = String(inputText || '').match(pattern);
+      const parsed = Number.parseInt(match?.[1] || '', 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return 0;
+  }
+
+  function pickByText(text, options) {
+    if (!options.length) {
+      return '';
+    }
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    }
+    return options[hash % options.length];
+  }
+
+  const greetingPatterns = [/^hi\b/, /^hello\b/, /^hey\b/, /salaam|salam|as[-\s]*salamu/];
+  if (greetingPatterns.some((pattern) => pattern.test(compact))) {
+    return pickByText(compact, [
+      `Wa alaykum as-salam. Beautiful to have you here. Since you're in ${contextLabel}, would you like a short meaning overview or a practical life reflection from this verse?`,
+      `Wa alaykum as-salam. I'm with you in ${contextLabel}. Ask for tafsir context, key themes, or one action point from the verse and I'll keep it concise.`,
+      `As-salamu alaykum. You're reading ${contextLabel}. If you want, I can summarize the verse in simple language and then give one gentle step to apply it today.`,
+    ]);
+  }
+
+  if (compact.length <= 8) {
+    return `I'm here with you in ${contextLabel}. Ask me about meaning, tafsir context, or how to apply this verse today, and I'll answer briefly.`;
+  }
+
+  if (question.includes('how are you')) {
+    return `Alhamdulillah, I'm here and ready to help. You're in ${contextLabel} - ask for the meaning, context, or one practical action from the verse.`;
+  }
+
+  if (isRevelationTimingQuestion(compact)) {
+    return getRevelationTimingReply(currentSurah);
+  }
+
+  const verseNumber = extractRequestedVerseNumber(compact);
+  if (question.includes('context') && verseNumber) {
+    if (Number.isFinite(verseNumber) && verseNumber > 0) {
+      const surahLower = String(currentSurah || '').toLowerCase();
+      if (surahLower.includes('fatihah') || surahLower.includes('fatiha')) {
+        const fatihahContext = {
+          1: 'Verse 1 opens with basmalah and frames the surah with Allah\'s mercy. Context: begin every major act with dependence on and remembrance of Allah.',
+          2: 'Verse 2 anchors faith in praise and lordship: all praise belongs to Allah, Lord of all worlds. Context: it grounds worship in gratitude and recognition of His authority.',
+          3: 'Verse 3 repeats mercy (Al-Rahman, Al-Raheem) to shape the believer\'s view of Allah with hope and trust, not despair.',
+          4: 'Verse 4 (Master of the Day of Judgment) places accountability at the center. Context: after mercy comes responsibility, so faith is lived with sincerity, justice, and awareness of return to Allah.',
+          5: 'Verse 5 is the covenant of worship and reliance: only You we worship and only You we ask for help. Context: it corrects intention and dependence.',
+          6: 'Verse 6 asks for ongoing guidance, showing that guidance is a daily need, not a one-time event.',
+          7: 'Verse 7 defines the straight path by contrast: seek the path of those favored by Allah and avoid paths of rebellion or misguidance.',
+        };
+
+        if (fatihahContext[verseNumber]) {
+          return fatihahContext[verseNumber];
+        }
+      }
+
+      const matchedVerse = Array.isArray(surahVerses)
+        ? surahVerses.find((verse) => Number(verse?.verseNumber || 0) === verseNumber)
+        : null;
+      const matchedTranslation = String(matchedVerse?.translation || '').trim();
+
+      if (matchedTranslation) {
+        return `For verse ${verseNumber} in ${currentSurah || 'this surah'}, the immediate context is: "${matchedTranslation}". Read it in this flow: what it says about Allah, what it asks from you, and one concrete behavior to apply today.`;
+      }
+
+      return `For verse ${verseNumber} in ${currentSurah || 'this surah'}, read the context in three layers: the verse meaning itself, how it connects to the verses before/after it, and what action it asks from you today. If you want, I can break those three layers down briefly.`;
+    }
+  }
+
+  if (question.includes('meaning') || question.includes('mean') || question.includes('tafsir') || question.includes('context')) {
+    return `In ${contextLabel}, start by identifying what the verse says about Allah, guidance, or your relationship with Him. Then ask: what belief or behavior should change in me because of this verse today? That turns meaning into transformation.`;
+  }
+
+  if (question.includes('trust') || question.includes('tawakkul')) {
+    return `This verse in ${contextLabel} reminds us that Allah's knowledge and care are complete, while ours are limited. Trust grows when we act responsibly, then place outcomes with Him. Choose one concrete step today, and pair it with a short dua.`;
+  }
+
+  if (question.includes('practical') || question.includes('apply') || question.includes('life')) {
+    return `A practical way to apply ${contextLabel} is to pick one small, repeatable action linked to its meaning today. Keep it specific, sincere, and realistic for your current routine. Consistency matters more than intensity.`;
+  }
+
+  return `A helpful reflection from ${contextLabel}: identify one attribute of Allah or one guidance point in the verse, then ask how it changes your next decision today. Write one sentence and one action so the verse moves from reading into lived practice.`;
+}
+
+function buildFallbackActionChallenge(verses) {
+  const firstKey = String(verses?.[0]?.verseKey || '1:1');
+  const lastKey = String(verses?.[verses.length - 1]?.verseKey || firstKey);
+  const combined = (verses || []).map((v) => String(v?.translation || '').trim()).join(' ').toLowerCase();
+
+  let theme = 'Mindful obedience';
+  let title = 'Practice mindful restraint';
+  let body =
+    'Choose one conversation today where you slow down before speaking and aim for truth and gentleness. Let these verses shape both your words and your tone in that moment.';
+
+  if (combined.includes('mercy') || combined.includes('compassion')) {
+    theme = 'Mercy in daily conduct';
+    title = 'Give one intentional mercy';
+    body =
+      'Identify one person you usually rush with and respond today with visible patience and kindness. Let your mercy be concrete: a gentle reply, extra listening, or forgiving a small mistake.';
+  } else if (combined.includes('prayer') || combined.includes('worship')) {
+    theme = 'Consistency in worship';
+    title = 'Protect one prayer today';
+    body =
+      'Choose one prayer and prepare for it 10 minutes early with calm focus. Remove one distraction so this prayer becomes deliberate rather than rushed.';
+  } else if (combined.includes('tongue') || combined.includes('backbit') || combined.includes('speak')) {
+    theme = 'Guarding speech';
+    title = 'Guard your tongue today';
+    body =
+      'Before discussing anyone not present, pause and ask if your words are necessary and fair. If not, redirect the conversation toward something beneficial.';
+  }
+
+  const challenges = [{ title, body }];
+  if ((combined.includes('mercy') || combined.includes('compassion')) && (combined.includes('prayer') || combined.includes('worship'))) {
+    challenges.push({
+      title: 'Protect one prayer today',
+      body: 'Choose one prayer and prepare for it 10 minutes early with calm focus. Remove one distraction so this prayer becomes deliberate rather than rushed.',
+    });
+  }
+
+  return {
+    theme,
+    challenges: challenges.slice(0, 2),
+    verseRange: `${firstKey} - ${lastKey}`,
+  };
+}
+
+function buildFallbackUnsealedWordAnalysis({ arabicWord, wordRoot, verseKey, verseText, translation }) {
+  const cleanedWord = String(arabicWord || '').trim() || 'this word';
+  const cleanedRoot = String(wordRoot || '').trim();
+  const cleanedVerseKey = String(verseKey || '').trim() || 'this verse';
+  const cleanedVerseText = String(verseText || '').replace(/\s+/g, ' ').trim();
+  const cleanedTranslation = String(translation || '').replace(/\s+/g, ' ').trim();
+
+  const opening = cleanedVerseText ? `In ${cleanedVerseKey}, this word appears in the phrase "${cleanedVerseText.slice(0, 120)}${cleanedVerseText.length > 120 ? '...' : ''}".` : `In ${cleanedVerseKey}, this word carries the line's emotional center.`;
+
+  const rootLine = cleanedRoot
+    ? `Its root (${cleanedRoot}) signals a stable semantic field that shapes how the listener feels the sentence.`
+    : 'Its form and placement suggest emphasis, precision, and tone rather than a random synonym choice.';
+
+  const translationLine = cleanedTranslation
+    ? `Compared with the translation "${cleanedTranslation.slice(0, 110)}${cleanedTranslation.length > 110 ? '...' : ''}", this Arabic choice preserves a stronger rhetorical texture.`
+    : 'Even in translation, this choice keeps a tighter rhythm and stronger rhetorical contrast.';
+
+  return {
+    totalOccurrences: 0,
+    mostCommonSurah: 'Unknown',
+    makkiOrMadani: 'Unknown',
+    whyThisWord: `${opening} ${rootLine} ${translationLine}`,
+    coreMeaning: cleanedRoot
+      ? `The root ${cleanedRoot} carries a cluster of meanings that usually combine literal sense with emotional force. In this verse, the dominant shade points to clarity, immediacy, and moral direction in the flow of meaning.`
+      : `This word belongs to a semantic family that layers literal meaning with emotional force. In this verse, the dominant shade supports clarity, immediacy, and moral direction in the flow of meaning.`,
+    acrossQuran: [],
+    whatChanges: `If this word were replaced with a flatter alternative, the verse would lose precision and emotional weight. Keeping ${cleanedWord} preserves the intended balance between meaning, rhythm, and spiritual impact in ${cleanedVerseKey}.`,
+  };
 }
 
 function toBase64Url(buffer) {
@@ -956,6 +1281,454 @@ app.post('/api/groups/:code/vote', async (req, res) => {
   }
 });
 
+app.get('/api/reflections/public', async (req, res) => {
+  const verseKeyFilter = String(req.query?.verseKey || '').trim();
+
+  try {
+    const reflections = await readReflections();
+    const result = reflections
+      .filter((item) => {
+        if (!item?.isPublic) {
+          return false;
+        }
+
+        if (!verseKeyFilter) {
+          return true;
+        }
+
+        return String(item?.verseKey || '').trim() === verseKeyFilter;
+      })
+      .sort((a, b) => {
+        const aTime = new Date(a?.date || 0).getTime();
+        const bTime = new Date(b?.date || 0).getTime();
+        return bTime - aTime;
+      })
+      .slice(0, 50);
+
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed to load public reflections' });
+  }
+});
+
+app.post('/api/reflections/publish', async (req, res) => {
+  const privacy = String(req.body?.accountPrivacy || '').trim().toLowerCase();
+  if (privacy !== 'public') {
+    return res.status(403).json({ message: 'Public account is required to share reflections' });
+  }
+
+  const userId = String(req.body?.userId || '').trim();
+  const verseKey = String(req.body?.verseKey || '').trim();
+  const verseText = String(req.body?.verseText || '').trim();
+  const translation = String(req.body?.translation || '').trim();
+  const answer = String(req.body?.answer || '').trim();
+  const date = String(req.body?.date || new Date().toISOString()).trim();
+  const userName = String(req.body?.userName || '').trim() || 'Anonymous Brother/Sister';
+
+  if (!userId || !verseKey || !verseText || !answer) {
+    return res.status(400).json({ message: 'userId, verseKey, verseText, and answer are required' });
+  }
+
+  try {
+    const reflections = await readReflections();
+    const createdReflection = {
+      id: crypto.randomUUID(),
+      userId,
+      userName,
+      verseKey,
+      verseText,
+      translation,
+      answer,
+      date,
+      likes: 0,
+      likedBy: [],
+      isPublic: true,
+    };
+
+    reflections.unshift(createdReflection);
+    await writeReflections(reflections);
+    return res.status(201).json(createdReflection);
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed to publish reflection' });
+  }
+});
+
+app.post('/api/reflections/:id/like', async (req, res) => {
+  const reflectionId = String(req.params?.id || '').trim();
+  const userId = String(req.body?.userId || '').trim();
+
+  if (!reflectionId || !userId) {
+    return res.status(400).json({ message: 'Reflection id and userId are required' });
+  }
+
+  try {
+    const reflections = await readReflections();
+    const index = reflections.findIndex((item) => String(item?.id || '') === reflectionId);
+    if (index < 0) {
+      return res.status(404).json({ message: 'Reflection not found' });
+    }
+
+    const reflection = reflections[index];
+    const likedBySet = new Set(
+      Array.isArray(reflection?.likedBy)
+        ? reflection.likedBy.map((item) => String(item || '').trim()).filter(Boolean)
+        : []
+    );
+
+    if (likedBySet.has(userId)) {
+      likedBySet.delete(userId);
+    } else {
+      likedBySet.add(userId);
+    }
+
+    const likedBy = Array.from(likedBySet);
+    const likes = likedBy.length;
+
+    reflections[index] = {
+      ...reflection,
+      likedBy,
+      likes,
+    };
+
+    await writeReflections(reflections);
+    return res.json({ id: reflectionId, likes, likedBy, liked: likedBySet.has(userId) });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed to toggle like' });
+  }
+});
+
+app.post('/api/ai/action-challenge', async (req, res) => {
+  const verses = Array.isArray(req.body?.verses) ? req.body.verses : [];
+  const normalizedVerses = verses
+    .map((verse) => ({
+      verseKey: String(verse?.verseKey || '').trim(),
+      translation: String(verse?.translation || '').trim() || 'Translation unavailable for this verse.',
+    }))
+    .filter((verse) => verse.verseKey);
+
+  if (!normalizedVerses.length) {
+    return res.status(400).json({ message: 'Missing required field: verses with verseKey' });
+  }
+
+  const versesText = normalizedVerses.map((verse) => `${verse.verseKey}: ${verse.translation}`).join('\n');
+  const prompt = `You are a wise, warm Islamic scholar. Given these Quranic verses, identify their central theme in 5 words or less, then write practical real-world action challenges (2-3 sentences each) that a modern Muslim can implement TODAY based on these verses. The challenge must be specific, human, and practical - not vague advice like be kind or pray more. Ground it in the exact content of the verses. Never be preachy. If these verses contain more than one distinct actionable theme, return up to 2 challenges. Return JSON only: { theme: string, challenges: [{ title: string, body: string }] }\n\nVerses:\n${versesText}`;
+
+  function parseJsonFromModelText(text) {
+    const trimmed = String(text || '').trim();
+    const cleaned = trimmed.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    const slice = firstBrace >= 0 && lastBrace >= 0 ? cleaned.slice(firstBrace, lastBrace + 1) : cleaned;
+    return JSON.parse(slice);
+  }
+
+  try {
+    const raw = await generateWithGemini(prompt, { maxOutputTokens: 600, temperature: 0.7 });
+    const parsed = parseJsonFromModelText(raw);
+    const theme = String(parsed?.theme || '').trim();
+    const challenges = (Array.isArray(parsed?.challenges) ? parsed.challenges : [])
+      .map((item) => ({
+        title: String(item?.title || '').trim(),
+        body: String(item?.body || '').trim(),
+      }))
+      .filter((item) => item.title && item.body)
+      .slice(0, 2);
+
+    if (!theme || !challenges.length) {
+      throw new Error('Model response missing required fields');
+    }
+
+    return res.status(200).json({
+      theme,
+      challenges,
+    });
+  } catch (error) {
+    const fallback = buildFallbackActionChallenge(normalizedVerses);
+    if (isGeminiBusyError(error) || isGeminiQuotaError(error) || String(error?.message || '').toLowerCase().includes('json')) {
+      return res.status(200).json({
+        theme: fallback.theme,
+        challenges: fallback.challenges,
+        fallback: true,
+      });
+    }
+
+    return res.status(500).json({ message: error.message || 'Failed to generate action challenge' });
+  }
+});
+
+app.post('/api/ai/unseal-word', async (req, res) => {
+  const arabicWord = String(req.body?.arabicWord || '').trim();
+  const wordRoot = String(req.body?.wordRoot || '').trim();
+  const verseKey = String(req.body?.verseKey || '').trim();
+  const verseText = String(req.body?.verseText || '').trim();
+  const translation = String(req.body?.translation || '').trim();
+
+  if (!arabicWord || !verseKey || !verseText) {
+    return res.status(400).json({ message: 'Missing required fields: arabicWord, verseKey, verseText' });
+  }
+
+  const strippedInputWord = stripDiacritics(arabicWord);
+  const dePrefixedInputWord = strippedInputWord.replace(/^ال/, '');
+  const normalizedRoot = String(wordRoot || '').replace(/\s+/g, '');
+  const rootAliasToKey = {
+    رحم: strippedInputWord.includes('رحمن') ? 'رحمن' : 'رحيم',
+    ملك: 'ملك',
+    دين: 'دين',
+    حيي: 'حياة',
+    حيا: 'حياة',
+  };
+  console.log('Raw word received:', arabicWord);
+  console.log('After stripping:', strippedInputWord);
+  console.log('Map has key:', !!unsealedWords[strippedInputWord]);
+  console.log('Stripped input:', strippedInputWord);
+  console.log('De-prefixed input:', dePrefixedInputWord);
+
+  // First try direct lookup
+  let result =
+    unsealedWords[strippedInputWord] ||
+    unsealedWords[dePrefixedInputWord] ||
+    unsealedWords[`ال${dePrefixedInputWord}`];
+
+  if (!result && rootAliasToKey[normalizedRoot] && unsealedWords[rootAliasToKey[normalizedRoot]]) {
+    result = unsealedWords[rootAliasToKey[normalizedRoot]];
+    console.log('Matched via root alias:', normalizedRoot, '->', rootAliasToKey[normalizedRoot]);
+  }
+
+  // If not found, try matching against stripped map keys
+  if (!result) {
+    for (const key of Object.keys(unsealedWords)) {
+      const strippedKey = stripDiacritics(key);
+      const dePrefixedKey = strippedKey.replace(/^ال/, '');
+      if (
+        strippedKey === strippedInputWord ||
+        strippedKey === dePrefixedInputWord ||
+        dePrefixedKey === strippedInputWord ||
+        dePrefixedKey === dePrefixedInputWord
+      ) {
+        result = unsealedWords[key];
+        console.log('Matched via key stripping:', key);
+        break;
+      }
+    }
+  }
+
+  if (result) {
+    console.log('Returning hardcoded result');
+    return res.json(result);
+  }
+
+  const cacheKey = arabicWord.toLowerCase();
+  const [currentSurahRaw] = verseKey.split(':');
+  const currentSurah = Number.parseInt(String(currentSurahRaw || ''), 10);
+  const cached = unsealedWordAnalysisCache.get(cacheKey);
+  if (cached && !cached.fallback) {
+    return res.status(200).json({
+      totalOccurrences: Number.parseInt(String(cached?.totalOccurrences || 0), 10) || 0,
+      mostCommonSurah: String(cached?.mostCommonSurah || 'Unknown').trim(),
+      makkiOrMadani: String(cached?.makkiOrMadani || 'Unknown').trim(),
+      whyThisWord: String(cached?.whyThisWord || '').trim(),
+      coreMeaning: String(cached?.coreMeaning || '').trim(),
+      acrossQuran: Array.isArray(cached?.acrossQuran) ? cached.acrossQuran : [],
+      whatChanges: String(cached?.whatChanges || '').trim(),
+      fallback: Boolean(cached?.fallback),
+    });
+  }
+
+  if (cached?.fallback) {
+    unsealedWordAnalysisCache.delete(cacheKey);
+  }
+
+  function parseSurahNumberFromVerseKey(key) {
+    const [surahRaw] = String(key || '').split(':');
+    const surah = Number.parseInt(String(surahRaw || ''), 10);
+    return Number.isFinite(surah) ? surah : 0;
+  }
+
+  function parseJsonFromModelText(text) {
+    const trimmed = String(text || '').trim();
+    const cleaned = trimmed.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    const slice = firstBrace >= 0 && lastBrace >= 0 ? cleaned.slice(firstBrace, lastBrace + 1) : cleaned;
+    return JSON.parse(slice);
+  }
+
+  const prompt = [
+    'You are a Quran Arabic linguistics guide.',
+    'Analyze one exact Arabic word from a verse and return STRICT JSON only. No markdown, no explanation outside JSON.',
+    'Use concise, clear wording for non-specialists while staying textually accurate.',
+    '',
+    `Arabic word: ${arabicWord}`,
+    `Root (if known): ${wordRoot || 'Unknown'}`,
+    `Verse key: ${verseKey}`,
+    `Verse text: ${verseText}`,
+    `Verse translation: ${translation || 'N/A'}`,
+    '',
+    'Return exactly this schema:',
+    '{',
+    '  "totalOccurrences": number,',
+    '  "mostCommonSurah": "string",',
+    '  "makkiOrMadani": "string",',
+    '  "whyThisWord": "string",',
+    '  "coreMeaning": "string",',
+    '  "acrossQuran": [',
+    '    { "verseKey": "string", "quote": "string", "context": "string" }',
+    '  ],',
+    '  "whatChanges": "string"',
+    '}',
+    '',
+    'Rules:',
+    '- whyThisWord: 2-4 concise sentences explaining why this exact lexical choice fits this verse better than close alternatives.',
+    '- coreMeaning: one short paragraph describing semantic range of the root and major shade used here.',
+    '- For the acrossQuran array, you MUST return 3 DIFFERENT verse keys from 3 DIFFERENT surahs — never repeat the same verse key, never use the verse the user is currently reading, never use verses from the same surah as the current verse. Each must show the root being used in a genuinely different semantic context — for example if the root means worship in one place, show it meaning servitude in another, and devotion in a third. If you are not certain a verse exists with that exact root, do not include it.',
+    '- For each acrossQuran entry write one sentence that explicitly contrasts how the root is used there versus how it is used in the current verse. Use the format: Here the root means [X] — unlike in [current verse] where it means [Y]. Make the contrast specific and illuminating.',
+    '- each acrossQuran quote should be a short Arabic excerpt only.',
+    '- totalOccurrences: integer > 0.',
+    '- mostCommonSurah: short surah name label, e.g. Al-Baqarah.',
+    '- makkiOrMadani: exactly one of: Mostly Makki, Mostly Madani, Balanced.',
+    '- whatChanges: 2-3 sentences on emotional/rhetorical shift caused by this word in this verse.',
+    '- Use valid JSON with double quotes.',
+  ].join('\n');
+
+  try {
+    let raw = '';
+    try {
+      raw = await generateWithGroq(prompt, { maxTokens: 900, temperature: 0.35 });
+    } catch (groqError) {
+      const canFallbackToGemini = Boolean(genAI) && !isGroqRateLimitError(groqError);
+      if (!canFallbackToGemini) {
+        throw groqError;
+      }
+
+      raw = await generateWithGemini(prompt, { maxOutputTokens: 900, temperature: 0.35 });
+    }
+
+    const parsed = parseJsonFromModelText(raw);
+
+    const acrossQuranCandidates = (Array.isArray(parsed?.acrossQuran) ? parsed.acrossQuran : [])
+      .map((entry) => ({
+        verseKey: String(entry?.verseKey || '').trim(),
+        quote: String(entry?.quote || '').trim(),
+        context: String(entry?.context || '').trim(),
+      }))
+      .filter((entry) => {
+        if (!entry.verseKey || !entry.quote || !entry.context) {
+          return false;
+        }
+
+        if (entry.verseKey === verseKey) {
+          return false;
+        }
+
+        const entrySurah = parseSurahNumberFromVerseKey(entry.verseKey);
+        if (!entrySurah || (Number.isFinite(currentSurah) && entrySurah === currentSurah)) {
+          return false;
+        }
+
+        return true;
+      });
+
+    const seenVerseKeys = new Set();
+    const seenSurahs = new Set();
+    const acrossQuran = [];
+    acrossQuranCandidates.forEach((entry) => {
+      const entrySurah = parseSurahNumberFromVerseKey(entry.verseKey);
+      if (seenVerseKeys.has(entry.verseKey) || seenSurahs.has(entrySurah)) {
+        return;
+      }
+
+      seenVerseKeys.add(entry.verseKey);
+      seenSurahs.add(entrySurah);
+      acrossQuran.push(entry);
+    });
+
+    const normalizedMakkiMadani = String(parsed?.makkiOrMadani || '').trim();
+    const totalOccurrences = Number.parseInt(String(parsed?.totalOccurrences || ''), 10);
+    const mostCommonSurah = String(parsed?.mostCommonSurah || '').trim();
+
+    const payload = {
+      totalOccurrences: Number.isFinite(totalOccurrences) ? totalOccurrences : 0,
+      mostCommonSurah,
+      makkiOrMadani: normalizedMakkiMadani,
+      whyThisWord: String(parsed?.whyThisWord || '').trim(),
+      coreMeaning: String(parsed?.coreMeaning || parsed?.coreМeaning || '').trim(),
+      acrossQuran: acrossQuran.slice(0, 3),
+      whatChanges: String(parsed?.whatChanges || '').trim(),
+    };
+
+    const hasContrastContexts = payload.acrossQuran.every((entry) => /unlike in/i.test(String(entry.context || '')));
+    if (
+      !payload.whyThisWord ||
+      !payload.coreMeaning ||
+      !payload.whatChanges ||
+      !Number.isFinite(payload.totalOccurrences) ||
+      payload.totalOccurrences <= 0 ||
+      !payload.mostCommonSurah ||
+      !payload.makkiOrMadani ||
+      payload.acrossQuran.length !== 3 ||
+      !hasContrastContexts
+    ) {
+      throw new Error('Model response missing required fields');
+    }
+
+    unsealedWordAnalysisCache.set(cacheKey, payload);
+    return res.status(200).json(payload);
+  } catch (error) {
+    const shouldFallback =
+      isGeminiBusyError(error) ||
+      isGeminiQuotaError(error) ||
+      isGroqRateLimitError(error) ||
+      String(error?.message || '').toLowerCase().includes('groq_api_key') ||
+      String(error?.message || '').toLowerCase().includes('gemini_api_key') ||
+      String(error?.message || '').toLowerCase().includes('json') ||
+      String(error?.message || '').toLowerCase().includes('quota') ||
+      String(error?.message || '').toLowerCase().includes('rate-limit');
+
+    if (shouldFallback) {
+      const fallback = buildFallbackUnsealedWordAnalysis({
+        arabicWord,
+        wordRoot,
+        verseKey,
+        verseText,
+        translation,
+      });
+      return res.status(200).json({
+        ...fallback,
+        fallback: true,
+      });
+    }
+
+    return res.status(500).json({ message: 'Failed to unseal this word right now. Please try again shortly.' });
+  }
+});
+
+app.delete('/api/reflections/:id', async (req, res) => {
+  const reflectionId = String(req.params?.id || '').trim();
+  const userId = String(req.body?.userId || '').trim();
+
+  if (!reflectionId || !userId) {
+    return res.status(400).json({ message: 'Reflection id and userId are required' });
+  }
+
+  try {
+    const reflections = await readReflections();
+    const index = reflections.findIndex((item) => String(item?.id || '') === reflectionId);
+    if (index < 0) {
+      return res.status(404).json({ message: 'Reflection not found' });
+    }
+
+    if (String(reflections[index]?.userId || '') !== userId) {
+      return res.status(403).json({ message: 'You can only delete your own reflections' });
+    }
+
+    reflections.splice(index, 1);
+    await writeReflections(reflections);
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed to delete reflection' });
+  }
+});
+
 app.get('/api/ai/reflect', (_req, res) => {
   return res.status(405).json({
     message: 'Method not allowed. Use POST /api/ai/reflect with JSON body: { verseKey, verseText, translation }',
@@ -983,6 +1756,9 @@ app.post('/api/ai/reflect', async (req, res) => {
     return res.status(200).json({ question });
   } catch (err) {
     console.error('Gemini error full:', JSON.stringify(err, null, 2));
+    if (isGeminiQuotaError(err)) {
+      return res.status(200).json({ question: buildFallbackReflectionQuestion(verseKey, translation) });
+    }
     if (isGeminiBusyError(err)) {
       return res.status(503).json({ message: 'The AI is temporarily busy. Please try again in a moment.' });
     }
@@ -1174,7 +1950,10 @@ app.post('/api/ai/companion', async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const currentVerse = String(req.body?.currentVerse || '').trim();
   const currentSurah = String(req.body?.currentSurah || '').trim();
+  const currentTranslation = String(req.body?.currentTranslation || '').trim();
+  const currentArabicText = String(req.body?.currentArabicText || '').trim();
   const journalEntriesForCurrentSurah = String(req.body?.journalEntriesForCurrentSurah || '').trim();
+  const surahVerses = Array.isArray(req.body?.surahVerses) ? req.body.surahVerses : [];
 
   if (!messages.length) {
     return res.status(400).json({ message: 'Missing required field: messages' });
@@ -1199,33 +1978,124 @@ app.post('/api/ai/companion', async (req, res) => {
   }
 
   const historyWithoutLatest = recentMessages.slice(0, -1);
+  const deterministicReply = buildDeterministicCompanionReply({
+    currentSurah,
+    userMessage: latestMessage.content,
+  });
+  if (deterministicReply) {
+    return res.status(200).json({ reply: deterministicReply, deterministic: true });
+  }
+
+  if (!groq) {
+    return res.status(500).json({ error: 'GROQ_API_KEY is not configured' });
+  }
+
+  const systemPrompt = 'You are a warm, human Quran companion. Keep answers natural and concise. If the user gives a greeting or small-talk message, respond warmly and invite a verse-focused question without forcing advice. If the user asks about meaning, context, or application, give one practical suggestion grounded in the current verse in at most 3 sentences. Never fabricate hadith or verse references — if unsure of a fact, say so clearly.';
+
+  const verseContext = [
+    `Current surah: ${currentSurah || 'Unknown surah'}`,
+    `Current verse: ${currentVerse || 'Unknown verse'}`,
+    `Arabic text: ${currentArabicText || 'Not provided'}`,
+    `English translation: ${currentTranslation || 'Not provided'}`,
+  ].join('\n');
+
   const formattedHistory = historyWithoutLatest
     .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
     .join('\n');
 
-  const journalContext = journalEntriesForCurrentSurah
-    ? `\nThe user has written these personal reflections: ${journalEntriesForCurrentSurah}\n`
-    : '';
-
-  const fullPrompt = `You are a knowledgeable, warm Quran companion. The user is currently reading ${currentSurah || 'this surah'}, verse ${currentVerse || 'this verse'}. Answer questions about the Quran conversationally, humbly, and concisely. Never make up hadith or verses. Keep responses under 150 words.
-${journalContext}
-
-Conversation history:
-${formattedHistory}
-
-User: ${latestMessage.content}
-Assistant:`;
+  const userPrompt = [
+    verseContext,
+    journalEntriesForCurrentSurah ? `Recent journal reflections from user:\n${journalEntriesForCurrentSurah}` : '',
+    formattedHistory ? `Conversation history:\n${formattedHistory}` : '',
+    `User question: ${latestMessage.content}`,
+    'Respond naturally to the user intent and keep it concise.',
+  ].filter(Boolean).join('\n\n');
 
   try {
-    console.log('Calling Gemini with prompt:', fullPrompt);
-    const rawReply = await generateWithGemini(fullPrompt, { maxOutputTokens: 800, temperature: 0.7 });
-    const reply = String(rawReply || '').replace(/\s+/g, ' ').trim();
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: 200,
+      temperature: 0.7,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+
+    const rawReply = String(completion?.choices?.[0]?.message?.content || '').trim();
+    const reply = rawReply.replace(/\s+/g, ' ').trim();
     return res.status(200).json({ reply });
   } catch (err) {
-    console.error('Gemini error full:', JSON.stringify(err, null, 2));
-    if (isGeminiBusyError(err)) {
-      return res.status(503).json({ message: 'The AI is temporarily busy. Please try again in a moment.' });
+    const status = Number(err?.status || err?.response?.status || 0);
+    if (status === 429) {
+      return res.status(200).json({ response: 'Please try again in a moment.' });
     }
+
+    return res.status(500).json({ error: err.message || 'AI request failed' });
+  }
+});
+
+app.post('/api/ai/live-this', async (req, res) => {
+  const currentVerse = String(req.body?.currentVerse || '').trim();
+  const currentSurah = String(req.body?.currentSurah || '').trim();
+  const currentTranslation = String(req.body?.currentTranslation || '').trim();
+  const currentArabicText = String(req.body?.currentArabicText || '').trim();
+
+  if (!currentVerse || (!currentArabicText && !currentTranslation)) {
+    return res.status(400).json({ message: 'Missing required fields: currentVerse and verse text context' });
+  }
+
+  if (!groq) {
+    return res.status(500).json({ error: 'GROQ_API_KEY is not configured' });
+  }
+
+  const systemPrompt = 'You are a Quran action guide. Give exactly ONE specific practical thing the user can do today that directly applies this verse to modern life. Format your response in exactly this structure — Action: [one sentence] Why: [one sentence connecting directly to the verse] Example: [one concrete real-world example]. Never exceed 3 sentences total. Never fabricate Islamic references — if unsure of a fact say so.';
+
+  const userPrompt = [
+    `Current surah: ${currentSurah || 'Unknown surah'}`,
+    `Current verse: ${currentVerse}`,
+    `Arabic text: ${currentArabicText || 'Not provided'}`,
+    `English translation: ${currentTranslation || 'Not provided'}`,
+    'Return exactly 3 lines starting with Action:, Why:, and Example:.',
+  ].join('\n');
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: 170,
+      temperature: 0.4,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+
+    const raw = String(completion?.choices?.[0]?.message?.content || '').trim();
+    const lines = raw
+      .split(/\r?\n+/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    const findLine = (label) => lines.find((line) => new RegExp(`^${label}:`, 'i').test(line));
+    const actionLine = findLine('Action');
+    const whyLine = findLine('Why');
+    const exampleLine = findLine('Example');
+
+    if (!actionLine || !whyLine || !exampleLine) {
+      return res.status(200).json({
+        response: 'Action: Read this verse once before your next decision today.\nWhy: It grounds your choice in the guidance of this exact ayah.\nExample: Before sending a difficult message, pause for 10 seconds, recall this verse, then write with its tone in mind.',
+        fallback: true,
+      });
+    }
+
+    const response = [actionLine, whyLine, exampleLine].join('\n');
+    return res.status(200).json({ response });
+  } catch (err) {
+    const status = Number(err?.status || err?.response?.status || 0);
+    if (status === 429) {
+      return res.status(200).json({ response: 'Please try again in a moment.' });
+    }
+
     return res.status(500).json({ error: err.message || 'AI request failed' });
   }
 });
