@@ -29,6 +29,8 @@ const FORGOTTEN_SURAH_ID_STORAGE_KEY = 'lastForgottenSurahId';
 const FORGOTTEN_SURAH_HOOK_STORAGE_KEY = 'lastForgottenSurahHook';
 const FORGOTTEN_SURAH_DISMISSED_DATE_STORAGE_KEY = 'forgottenSurahDismissedDate';
 const SURAH_READING_HISTORY_STORAGE_KEY = 'tilawah_surah_reading_history';
+const FIRST_VISIT_TOUR_DONE_STORAGE_KEY = 'firstVisitTourDone';
+const LAST_WIRD_CELEBRATION_STORAGE_KEY = 'lastWirdCelebration';
 const AUDIO_HOST = 'https://verses.quran.foundation';
 const READ_AWARD_DELAY_MS = 1500;
 const FORGOTTEN_SURAH_WINDOW_DAYS = 7;
@@ -75,6 +77,25 @@ const KHATMAH_INTERVAL_OPTIONS = [
   { id: '10-verses', label: '10 verses', targetVerses: 10 },
   { id: '20-verses', label: '20 verses', targetVerses: 20 },
   { id: '1-page', label: '1 page (~15 verses)', targetVerses: 15 },
+];
+
+const FIRST_VISIT_TOUR_STEPS = [
+  {
+    id: 'arabic-word',
+    message: 'Tap any Arabic word to discover its meaning and hear its pronunciation',
+  },
+  {
+    id: 'tafsir-button',
+    message: 'Go deeper with Tafsir — classical scholarly commentary on every verse',
+  },
+  {
+    id: 'user-dropdown',
+    message: 'Enter Khatmah Mode to read the Quran the way the Sahaba did — one action at a time',
+  },
+  {
+    id: 'surah-dropdown',
+    message: 'Every week a forgotten surah is waiting for you — one you have never read with a reason you cannot ignore',
+  },
 ];
 
 function extractReciterName(reciter) {
@@ -936,6 +957,10 @@ export default function App() {
   const voiceMirrorAnimationFrameRef = useRef(0);
   const audioBarMenuRef = useRef(null);
   const userMenuRef = useRef(null);
+  const surahMenuTriggerRef = useRef(null);
+  const userTriggerRef = useRef(null);
+  const firstVerseArabicRef = useRef(null);
+  const firstVerseTafsirRef = useRef(null);
   const wordHighlightIntervalRef = useRef(null);
   const nextAudioPrefetchRef = useRef(null);
   const lastPrefetchSourceVerseIdRef = useRef('');
@@ -961,6 +986,9 @@ export default function App() {
   const [verses, setVerses] = useState([]);
   const [expandedTafsir, setExpandedTafsir] = useState({});
   const [liveThisByVerse, setLiveThisByVerse] = useState({});
+  const [isFirstVisitTourActive, setIsFirstVisitTourActive] = useState(false);
+  const [firstVisitTourStepIndex, setFirstVisitTourStepIndex] = useState(0);
+  const [firstVisitTourRect, setFirstVisitTourRect] = useState(null);
   const [tafsirByChapter, setTafsirByChapter] = useState({});
   const [audioByChapter, setAudioByChapter] = useState({});
   const [wordTimingsByChapter, setWordTimingsByChapter] = useState({});
@@ -1096,6 +1124,7 @@ export default function App() {
   const [isVoiceMirrorUserPlaying, setIsVoiceMirrorUserPlaying] = useState(false);
   const [voiceMirrorUserProgress, setVoiceMirrorUserProgress] = useState(0);
   const [voiceMirrorAnimatedPercent, setVoiceMirrorAnimatedPercent] = useState(0);
+  const [isWirdCelebrationOpen, setIsWirdCelebrationOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('style');
   const [readingStatsPeriod, setReadingStatsPeriod] = useState('day');
@@ -2286,6 +2315,44 @@ export default function App() {
     localStorage.setItem(KHATMAH_INTERVAL_STORAGE_KEY, khatmahInterval);
   }, [khatmahInterval]);
 
+  function checkAndTriggerWirdCelebration(versesTodayCount) {
+    const goalPages = Number(dailyPageGoal || 0);
+    if (!Number.isFinite(goalPages) || goalPages <= 0) {
+      return;
+    }
+
+    const todaysVerses = Number(versesTodayCount || 0);
+    const threshold = goalPages * VERSES_PER_PAGE;
+    if (todaysVerses < threshold) {
+      return;
+    }
+
+    if (localStorage.getItem(LAST_WIRD_CELEBRATION_STORAGE_KEY) === todayKey) {
+      return;
+    }
+
+    localStorage.setItem(LAST_WIRD_CELEBRATION_STORAGE_KEY, todayKey);
+    setIsWirdCelebrationOpen(true);
+  }
+
+  useEffect(() => {
+    checkAndTriggerWirdCelebration(todaysReadCount);
+  }, [todaysReadCount, dailyPageGoal, todayKey]);
+
+  useEffect(() => {
+    if (!isWirdCelebrationOpen) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setIsWirdCelebrationOpen(false);
+    }, 4000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [isWirdCelebrationOpen]);
+
   useEffect(() => {
     if (!reflectionModal) {
       setReflectionShareNotice('');
@@ -2582,6 +2649,72 @@ export default function App() {
       document.removeEventListener('mousedown', handleOutsideWordClick);
     };
   }, []);
+
+  useEffect(() => {
+    if (!entryMode || activePage !== 'reader' || !verses.length) {
+      return;
+    }
+
+    const hasCompletedTour = localStorage.getItem(FIRST_VISIT_TOUR_DONE_STORAGE_KEY) === 'true';
+    if (hasCompletedTour) {
+      return;
+    }
+
+    setIsFirstVisitTourActive(true);
+    setFirstVisitTourStepIndex(0);
+  }, [entryMode, activePage, verses.length]);
+
+  useEffect(() => {
+    const activeStep = FIRST_VISIT_TOUR_STEPS[firstVisitTourStepIndex] || null;
+    if (!isFirstVisitTourActive || !activeStep) {
+      setFirstVisitTourRect(null);
+      return;
+    }
+
+    const updateRect = () => {
+      const target = getFirstVisitTourTargetElement(activeStep.id);
+      if (!target) {
+        setFirstVisitTourRect(null);
+        return;
+      }
+
+      const rect = target.getBoundingClientRect();
+      setFirstVisitTourRect({
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+      });
+    };
+
+    updateRect();
+    const rafId = window.requestAnimationFrame(updateRect);
+    window.addEventListener('resize', updateRect);
+    window.addEventListener('scroll', updateRect, true);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', updateRect);
+      window.removeEventListener('scroll', updateRect, true);
+    };
+  }, [isFirstVisitTourActive, firstVisitTourStepIndex, verses.length, isDrawerOpen, isUserMenuOpen, activePage]);
+
+  function completeFirstVisitTour() {
+    localStorage.setItem(FIRST_VISIT_TOUR_DONE_STORAGE_KEY, 'true');
+    setIsFirstVisitTourActive(false);
+    setFirstVisitTourStepIndex(0);
+    setFirstVisitTourRect(null);
+  }
+
+  function goToNextFirstVisitTourStep() {
+    const isFinalStep = firstVisitTourStepIndex >= FIRST_VISIT_TOUR_STEPS.length - 1;
+    if (isFinalStep) {
+      completeFirstVisitTour();
+      return;
+    }
+
+    setFirstVisitTourStepIndex((current) => current + 1);
+  }
 
   const filteredChapters = useMemo(() => {
     const query = chapterSearch.trim().toLowerCase();
@@ -2973,6 +3106,11 @@ export default function App() {
       if (updatedCurrentStreak !== Number(currentStreakData.currentStreak || 0)) {
         postStreakToServer(nextStreakData);
       }
+
+      checkAndTriggerWirdCelebration(todaysCount + 1);
+    } else {
+      const currentReadCount = Number(streakRef.current?.activityLog?.[dateKey] || 0);
+      checkAndTriggerWirdCelebration(currentReadCount);
     }
 
     const nextMultiplier = nextStreakCount >= 7 ? 2 : 1;
@@ -5897,6 +6035,57 @@ export default function App() {
   const sortedGroupMembers = Array.isArray(groupData?.members)
     ? [...groupData.members].sort((a, b) => Number(b?.versesToday || 0) - Number(a?.versesToday || 0))
     : [];
+  const groupGoalTarget = Math.max(1, Number(groupData?.wirdGoal || 10));
+  const highestVersesToday = sortedGroupMembers.reduce((highest, member) => {
+    return Math.max(highest, Number(member?.versesToday || 0));
+  }, 0);
+  const crownedMemberIds = new Set(
+    sortedGroupMembers
+      .filter((member) => Number(member?.versesToday || 0) === highestVersesToday)
+      .map((member) => String(member?.userId || member?.name || '').trim())
+      .filter(Boolean)
+  );
+  const currentUserMember = sortedGroupMembers.find((member) => String(member?.userId || '') === currentUserId);
+  const currentUserHitGroupGoal = Boolean(currentUserId) && Number(currentUserMember?.versesToday || 0) >= groupGoalTarget;
+  const activeFirstVisitTourStep = FIRST_VISIT_TOUR_STEPS[firstVisitTourStepIndex] || null;
+
+  function getFirstVisitTourTargetElement(stepId) {
+    if (stepId === 'arabic-word') {
+      return firstVerseArabicRef.current;
+    }
+    if (stepId === 'tafsir-button') {
+      return firstVerseTafsirRef.current;
+    }
+    if (stepId === 'user-dropdown') {
+      return userTriggerRef.current;
+    }
+    if (stepId === 'surah-dropdown') {
+      return surahMenuTriggerRef.current;
+    }
+    return null;
+  }
+
+  function getFirstVisitTourCardStyle(targetRect) {
+    if (!targetRect) {
+      return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
+    }
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const cardWidth = Math.min(360, viewportWidth - 28);
+    const preferredLeft = targetRect.left + targetRect.width / 2 - cardWidth / 2;
+    const left = Math.max(14, Math.min(viewportWidth - cardWidth - 14, preferredLeft));
+
+    const belowTop = targetRect.bottom + 14;
+    const aboveTop = targetRect.top - 178;
+    const top = belowTop <= viewportHeight - 24 ? belowTop : Math.max(14, aboveTop);
+
+    return {
+      top: `${top}px`,
+      left: `${left}px`,
+      width: `${cardWidth}px`,
+    };
+  }
   const groupUpdatedLabel = groupLastUpdatedAt
     ? new Date(groupLastUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : '';
@@ -5904,6 +6093,16 @@ export default function App() {
   const audioSpeedOptions = [0.5, 0.6, 0.7, 0.8, 0.9, 1];
   const forgottenSurahChapter = chapters.find(
     (chapter) => Number(chapter?.id || 0) === Number(forgottenSurah?.surahNumber || 0)
+  );
+  const wirdCelebrationParticles = useMemo(
+    () => Array.from({ length: 20 }, (_, index) => ({
+      id: index,
+      left: 4 + ((index * 11) % 92),
+      delay: (index % 7) * 0.35,
+      duration: 2.8 + ((index % 5) * 0.45),
+      size: 4 + (index % 4),
+    })),
+    []
   );
 
   if (!entryMode) {
@@ -5926,6 +6125,7 @@ export default function App() {
         <section className="landing-right" aria-label="Authentication options">
           <article className="landing-card">
             <h1>Tilawah</h1>
+            <p className="landing-subtitle-line">The Quran reading experience built for lasting connection - not just recitation.</p>
             <p className="landing-tagline">Your personal Quran companion</p>
 
             <button
@@ -6112,6 +6312,7 @@ export default function App() {
           <button
             type="button"
             className="surah-menu-trigger"
+            ref={surahMenuTriggerRef}
             onClick={() => {
               setDrawerTab('surahs');
               setIsDrawerOpen(true);
@@ -6142,6 +6343,7 @@ export default function App() {
             <button
               className="user-trigger"
               type="button"
+              ref={userTriggerRef}
               aria-haspopup="menu"
               aria-expanded={isUserMenuOpen}
               onClick={() => setIsUserMenuOpen((current) => !current)}
@@ -6223,7 +6425,7 @@ export default function App() {
             {isLoadingVerses ? <p className="status-text">Loading verses...</p> : null}
 
             <div className="verses-wrap">
-              {verses.map((verse) => {
+              {verses.map((verse, verseIndex) => {
                 const verseId = getVerseId(verse);
                 const verseNumber =
                   Number.parseInt(String(verse?.verse_number || ''), 10) ||
@@ -6243,9 +6445,10 @@ export default function App() {
                 return (
                   <article
                     key={verseId}
-                    className={`verse-card ${todaysActions.read.has(verseId) ? 'is-read' : ''} ${
+                    className={`verse-card verse-fade-in ${todaysActions.read.has(verseId) ? 'is-read' : ''} ${
                       isAudioPlaying && currentAudio?.verseId === verseId ? 'is-playing' : ''
                     } ${glowingVerseId === String(verseId) ? 'is-glowing' : ''}`}
+                    style={{ animationDelay: `${verseIndex * 60}ms` }}
                     ref={(node) => assignVerseRef(verseId, node)}
                     data-verse-id={verseId}
                   >
@@ -6290,6 +6493,7 @@ export default function App() {
                     <div className="arabic-text" dir="rtl" lang="ar" translate="no">
                       <span
                         className="arabic-click-surface"
+                        ref={verseIndex === 0 ? firstVerseArabicRef : null}
                         onClick={(event) => handleArabicTextClick(verse, event)}
                         onMouseMove={(event) => handleArabicTextMouseMove(verse, event)}
                         onMouseLeave={handleArabicTextMouseLeave}
@@ -6337,6 +6541,7 @@ export default function App() {
                       <button
                         className={`tafsir-link-btn ${expandedTafsir[verseId] ? 'active' : ''}`}
                         type="button"
+                        ref={verseIndex === 0 ? firstVerseTafsirRef : null}
                         data-tooltip="Tafsir"
                         onClick={() => toggleTafsir(verseId)}
                         disabled={isLoadingTafsir}
@@ -6780,6 +6985,9 @@ export default function App() {
                   </div>
                 ) : groupData ? (
                   <div className="group-dashboard">
+                    {currentUserHitGroupGoal ? (
+                      <p className="group-goal-hit-line">You hit the group goal today - Barakallahu feek 🌙</p>
+                    ) : null}
                     <header className="group-header">
                       <h3>{groupData.name}</h3>
                       <small>Share code: {groupData.code}</small>
@@ -6810,11 +7018,16 @@ export default function App() {
                           const goal = Math.max(1, Number(groupData?.wirdGoal || 10));
                           const progress = Math.min(100, (memberToday / goal) * 100);
                           const isCurrentUser = String(member?.userId || '') === currentUserId;
+                          const memberIdentity = String(member?.userId || member?.name || '').trim();
+                          const isTopMember = memberIdentity ? crownedMemberIds.has(memberIdentity) : false;
 
                           return (
                             <article key={String(member?.userId || member?.name)} className={`group-member-row ${isCurrentUser ? 'is-me' : ''}`}>
                               <div className="group-member-head">
-                                <strong>{member?.name || 'Member'}</strong>
+                                <strong>
+                                  {isTopMember ? <span className="group-crown" aria-label="Top member">👑</span> : null}
+                                  {member?.name || 'Member'}
+                                </strong>
                                 <span>{memberToday} today</span>
                               </div>
                               <div className="group-progress-track" aria-hidden="true">
@@ -7843,12 +8056,9 @@ export default function App() {
 
             {unsealedWordPanel.loading ? (
               <div className="unsealed-loading-state" aria-live="polite" aria-busy="true">
-                <div className="unsealed-shimmer-line" />
-                <div className="unsealed-shimmer-line w-90" />
-                <div className="unsealed-shimmer-line w-65" />
-                <div className="unsealed-shimmer-block" />
-                <div className="unsealed-shimmer-line w-75" />
-                <div className="unsealed-shimmer-line w-85" />
+                <div className="unsealed-shimmer-line cream" />
+                <div className="unsealed-shimmer-line cream w-90" />
+                <div className="unsealed-shimmer-line cream w-85" />
               </div>
             ) : null}
 
@@ -7908,6 +8118,58 @@ export default function App() {
                 </section>
               </div>
             ) : null}
+          </section>
+        </div>
+      ) : null}
+
+      {isWirdCelebrationOpen ? (
+        <div className="wird-celebration-overlay" onClick={() => setIsWirdCelebrationOpen(false)}>
+          <div className="wird-celebration-particles" aria-hidden="true">
+            {wirdCelebrationParticles.map((particle) => (
+              <span
+                key={`wird-particle-${particle.id}`}
+                className="wird-celebration-particle"
+                style={{
+                  left: `${particle.left}%`,
+                  animationDelay: `${particle.delay}s`,
+                  animationDuration: `${particle.duration}s`,
+                  width: `${particle.size}px`,
+                  height: `${particle.size}px`,
+                }}
+              />
+            ))}
+          </div>
+          <div className="wird-celebration-content">
+            <p className="wird-celebration-ar" dir="rtl" lang="ar" translate="no">بَارَكَ اللهُ فِيكُمْ</p>
+            <p className="wird-celebration-en">You have reached your daily wird</p>
+          </div>
+        </div>
+      ) : null}
+
+      {isFirstVisitTourActive && activePage === 'reader' && activeFirstVisitTourStep ? (
+        <div className="first-visit-tour-layer" role="dialog" aria-modal="true" aria-label="First visit tour">
+          {firstVisitTourRect ? (
+            <div
+              className="first-visit-tour-ring"
+              style={{
+                top: `${Math.max(4, firstVisitTourRect.top - 8)}px`,
+                left: `${Math.max(4, firstVisitTourRect.left - 8)}px`,
+                width: `${Math.max(20, firstVisitTourRect.width + 16)}px`,
+                height: `${Math.max(20, firstVisitTourRect.height + 16)}px`,
+              }}
+            />
+          ) : null}
+
+          <section className="first-visit-tour-card" style={getFirstVisitTourCardStyle(firstVisitTourRect)}>
+            <p>{activeFirstVisitTourStep.message}</p>
+            <div className="first-visit-tour-actions">
+              <button type="button" className="first-visit-tour-next" onClick={goToNextFirstVisitTourStep}>
+                Next
+              </button>
+              <button type="button" className="first-visit-tour-skip" onClick={completeFirstVisitTour}>
+                Skip Tour
+              </button>
+            </div>
           </section>
         </div>
       ) : null}

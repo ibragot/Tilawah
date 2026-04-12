@@ -347,6 +347,13 @@ body {
   line-height: 1.1;
 }
 
+.landing-subtitle-line {
+  margin: 0;
+  color: #5d6f7a;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
 .landing-tagline {
   margin: 0;
   color: #3f5563;
@@ -1169,6 +1176,70 @@ body {
   font-size: 0.9rem;
 }
 
+.wird-celebration-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  background: rgba(6, 10, 16, 0.92);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.wird-celebration-content {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+  padding: 0 1rem;
+}
+
+.wird-celebration-ar {
+  margin: 0;
+  color: #d7aa3e;
+  font-family: 'Scheherazade New', 'Amiri', serif;
+  font-size: clamp(2.2rem, 7vw, 52px);
+  line-height: 1.25;
+}
+
+.wird-celebration-en {
+  margin: 0.45rem 0 0;
+  color: #ffffff;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+.wird-celebration-particles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.wird-celebration-particle {
+  position: absolute;
+  bottom: -10px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #f4d078 0%, #d4a332 72%, rgba(212, 163, 50, 0.2) 100%);
+  opacity: 0;
+  animation-name: wird-particle-float;
+  animation-timing-function: ease-out;
+  animation-iteration-count: infinite;
+}
+
+@keyframes wird-particle-float {
+  0% {
+    transform: translateY(0) scale(0.85);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translateY(-105vh) scale(1.12);
+    opacity: 0;
+  }
+}
+
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -1963,6 +2034,13 @@ body {
   gap: 0.75rem;
 }
 
+.group-goal-hit-line {
+  margin: 0;
+  color: #0f7f74;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
 .group-header h3 {
   margin: 0;
   color: var(--clr-173346);
@@ -2047,7 +2125,15 @@ body {
 }
 
 .group-member-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
   color: var(--clr-173346);
+}
+
+.group-crown {
+  font-size: 0.9em;
+  line-height: 1;
 }
 
 .group-member-head span,
@@ -3102,6 +3188,11 @@ body {
   isolation: isolate;
 }
 
+.verse-card.verse-fade-in {
+  opacity: 0;
+  animation: verse-fade-in 300ms ease forwards;
+}
+
 .verse-card:last-child {
   border-bottom: 0;
 }
@@ -3330,6 +3421,78 @@ body {
   background: linear-gradient(120deg, #f9f2e6 0%, #ffffff 40%, #c7e9e0 100%);
 }
 
+.first-visit-tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  background: transparent;
+}
+
+.first-visit-tour-ring {
+  position: fixed;
+  border: 2px solid #1aa18d;
+  border-radius: 12px;
+  box-shadow: 0 0 0 9999px rgba(9, 18, 32, 0.72);
+  pointer-events: none;
+  z-index: 131;
+}
+
+.first-visit-tour-card {
+  position: fixed;
+  z-index: 132;
+  background: #10263d;
+  color: #f3e8d3;
+  border: 1px solid rgba(26, 161, 141, 0.55);
+  border-radius: 14px;
+  box-shadow: 0 16px 32px rgba(3, 8, 14, 0.45);
+  padding: 0.85rem 0.9rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.first-visit-tour-card p {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.45;
+}
+
+.first-visit-tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.first-visit-tour-next {
+  border: 0;
+  border-radius: 999px;
+  background: #1aa18d;
+  color: #092435;
+  padding: 0.45rem 0.95rem;
+  font-weight: 800;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.first-visit-tour-next:hover {
+  background: #16917f;
+}
+
+.first-visit-tour-skip {
+  border: 0;
+  background: transparent;
+  color: #b8c0cb;
+  padding: 0;
+  font-size: 0.78rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.first-visit-tour-skip:hover {
+  color: #d1d7df;
+}
+
 .unsealed-sheet-overlay {
   position: fixed;
   inset: 0;
@@ -3412,7 +3575,7 @@ body {
   overflow-y: auto;
   padding-top: 0.78rem;
   display: grid;
-  gap: 0.8rem;
+  gap: 0.55rem;
   align-content: start;
 }
 
@@ -3527,6 +3690,11 @@ body {
   animation: unsealed-shimmer 1.35s ease-in-out infinite;
 }
 
+.unsealed-shimmer-line.cream {
+  background: linear-gradient(100deg, #efe4d0 10%, #fbf2e2 40%, #efe4d0 70%);
+  background-size: 220% 100%;
+}
+
 .unsealed-shimmer-line {
   height: 14px;
   width: 100%;
@@ -3565,6 +3733,15 @@ body {
   }
   100% {
     background-position: -70% 0;
+  }
+}
+
+@keyframes verse-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 
