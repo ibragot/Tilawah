@@ -12,8 +12,16 @@ const DAILY_PAGE_GOAL_STORAGE_KEY = 'dailyPageGoal';
 const DAILY_COINS_STORAGE_KEY = 'tilawah_daily_coins';
 const LIFETIME_COINS_STORAGE_KEY = 'tilawah_lifetime_coins';
 const SHOW_TRANSLATION_STORAGE_KEY = 'tilawah_show_translation';
+const TAJWEED_ENABLED_STORAGE_KEY = 'tajweedEnabled';
+const MUSHAF_LOG_HISTORY_STORAGE_KEY = 'tilawah_mushaf_log_history';
+const VERSE_COLLECTIONS_STORAGE_KEY = 'tilawah_verse_collections';
+const FAMILY_MODE_ENABLED_STORAGE_KEY = 'familyModeEnabled';
+const FAMILY_MODE_PIN_STORAGE_KEY = 'familyModePin';
+const CHILD_MODE_ACTIVE_STORAGE_KEY = 'childModeActive';
+const CHILD_MODE_DAILY_GOAL_STORAGE_KEY = 'childModeDailyGoal';
+const CHILD_MODE_ACTIVITY_STORAGE_KEY = 'childModeActivity';
 const RECITER_ID_STORAGE_KEY = 'tilawah_reciter_id';
-const AUDIO_PLAYBACK_RATE_STORAGE_KEY = 'tilawah_audio_playback_rate';
+const AUDIO_PLAYBACK_RATE_STORAGE_KEY = 'preferredPlaybackSpeed';
 const AUDIO_VOLUME_STORAGE_KEY = 'tilawah_audio_volume';
 const READER_THEME_STORAGE_KEY = 'tilawah_reader_theme';
 const USER_GROUP_CODE_STORAGE_KEY = 'userGroupCode';
@@ -520,6 +528,121 @@ function readStoredSurahReadingHistory() {
   }
 }
 
+function readStoredMushafLogHistory() {
+  try {
+    const raw = localStorage.getItem(MUSHAF_LOG_HISTORY_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter((entry) => entry && typeof entry === 'object')
+      .map((entry) => ({
+        id: String(entry.id || '').trim(),
+        dateKey: String(entry.dateKey || '').trim(),
+        surahId: Number.parseInt(String(entry.surahId || ''), 10) || 0,
+        surahName: String(entry.surahName || '').trim(),
+        fromVerse: Number.parseInt(String(entry.fromVerse || ''), 10) || 0,
+        toVerse: Number.parseInt(String(entry.toVerse || ''), 10) || 0,
+        versesLogged: Number.parseInt(String(entry.versesLogged || ''), 10) || 0,
+        createdAt: String(entry.createdAt || '').trim(),
+      }))
+      .filter((entry) => entry.id && entry.dateKey && entry.surahId > 0 && entry.fromVerse > 0 && entry.toVerse >= entry.fromVerse);
+  } catch {
+    return [];
+  }
+}
+
+function readStoredFamilyModeEnabled() {
+  return localStorage.getItem(FAMILY_MODE_ENABLED_STORAGE_KEY) === 'true';
+}
+
+function readStoredFamilyModePin() {
+  const value = String(localStorage.getItem(FAMILY_MODE_PIN_STORAGE_KEY) || '').trim();
+  return /^\d{4}$/.test(value) ? value : '';
+}
+
+function readStoredChildModeActive() {
+  return localStorage.getItem(CHILD_MODE_ACTIVE_STORAGE_KEY) === 'true';
+}
+
+function readStoredChildModeDailyGoal() {
+  const raw = Number.parseInt(String(localStorage.getItem(CHILD_MODE_DAILY_GOAL_STORAGE_KEY) || ''), 10);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 5;
+  }
+  return Math.min(300, raw);
+}
+
+function readStoredChildModeActivity() {
+  try {
+    const raw = localStorage.getItem(CHILD_MODE_ACTIVITY_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { dateKey: '', lastSurahName: '', versesCompletedToday: 0, updatedAt: '' };
+    }
+
+    const versesCompletedToday = Number.parseInt(String(parsed.versesCompletedToday || 0), 10);
+    return {
+      dateKey: String(parsed.dateKey || '').trim(),
+      lastSurahName: String(parsed.lastSurahName || '').trim(),
+      versesCompletedToday: Number.isFinite(versesCompletedToday) && versesCompletedToday > 0 ? versesCompletedToday : 0,
+      updatedAt: String(parsed.updatedAt || '').trim(),
+    };
+  } catch {
+    return { dateKey: '', lastSurahName: '', versesCompletedToday: 0, updatedAt: '' };
+  }
+}
+
+function sanitizeCollectionName(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 30);
+}
+
+function readStoredVerseCollections() {
+  try {
+    const raw = localStorage.getItem(VERSE_COLLECTIONS_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter((collection) => collection && typeof collection === 'object')
+      .map((collection) => {
+        const verses = Array.isArray(collection.verses)
+          ? collection.verses
+              .filter((verse) => verse && typeof verse === 'object')
+              .map((verse) => ({
+                verseKey: String(verse.verseKey || '').trim(),
+                verseId: String(verse.verseId || '').trim(),
+                chapterId: Number.parseInt(String(verse.chapterId || ''), 10) || 0,
+                surahName: String(verse.surahName || '').trim(),
+                arabicText: String(verse.arabicText || '').trim(),
+                translationText: String(verse.translationText || '').trim(),
+                note: String(verse.note || ''),
+                addedAt: String(verse.addedAt || '').trim(),
+              }))
+              .filter((verse) => verse.verseKey)
+          : [];
+
+        return {
+          id: String(collection.id || '').trim(),
+          name: sanitizeCollectionName(collection.name),
+          createdAt: String(collection.createdAt || '').trim(),
+          verses,
+        };
+      })
+      .filter((collection) => collection.id && collection.name)
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  } catch {
+    return [];
+  }
+}
+
 function getDaysBetweenDateKeys(startDateKey, endDateKey) {
   const start = new Date(`${String(startDateKey || '').trim()}T00:00:00`);
   const end = new Date(`${String(endDateKey || '').trim()}T00:00:00`);
@@ -777,6 +900,100 @@ function buildInteractiveWords(verse) {
   });
 }
 
+const TAJWEED_RULE_COLORS = {
+  qalqalah: '#E74C3C',
+  ghunnah: '#27AE60',
+  madd: '#2980B9',
+  lamShamsiyyah: '#8E44AD',
+};
+
+const QALQALAH_LETTERS = new Set(['ق', 'ط', 'ب', 'ج', 'د']);
+const MADD_LETTERS = new Set(['ا', 'و', 'ي']);
+const GHUNNAH_LETTERS = new Set(['ن', 'م']);
+const SUN_LETTERS = new Set(['ت', 'ث', 'د', 'ذ', 'ر', 'ز', 'س', 'ش', 'ص', 'ض', 'ط', 'ظ', 'ل', 'ن']);
+const ALIF_LIKE_LETTERS = new Set(['ا', 'أ', 'إ', 'آ', 'ٱ']);
+const ARABIC_COMBINING_MARK_REGEX = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u08D4-\u08FF]/;
+
+function splitArabicClusters(text) {
+  const chars = Array.from(String(text || ''));
+  const clusters = [];
+  let current = '';
+
+  chars.forEach((char) => {
+    if (!current) {
+      current = char;
+      return;
+    }
+
+    if (ARABIC_COMBINING_MARK_REGEX.test(char)) {
+      current += char;
+      return;
+    }
+
+    clusters.push(current);
+    current = char;
+  });
+
+  if (current) {
+    clusters.push(current);
+  }
+
+  return clusters;
+}
+
+function getClusterBaseCharacter(cluster) {
+  return Array.from(String(cluster || ''))[0] || '';
+}
+
+function isLamShamsiyyahLam(clusters, index) {
+  const currentBase = getClusterBaseCharacter(clusters[index]);
+  if (currentBase !== 'ل') {
+    return false;
+  }
+
+  const previousBase = getClusterBaseCharacter(clusters[index - 1]);
+  const nextBase = getClusterBaseCharacter(clusters[index + 1]);
+  return ALIF_LIKE_LETTERS.has(previousBase) && SUN_LETTERS.has(nextBase);
+}
+
+function getTajweedColorForCluster(clusters, index) {
+  const cluster = String(clusters[index] || '');
+  const baseChar = getClusterBaseCharacter(cluster);
+  if (!baseChar) {
+    return '';
+  }
+
+  if (isLamShamsiyyahLam(clusters, index) || isLamShamsiyyahLam(clusters, index - 1)) {
+    return TAJWEED_RULE_COLORS.lamShamsiyyah;
+  }
+
+  if (GHUNNAH_LETTERS.has(baseChar) && cluster.includes('\u0651')) {
+    return TAJWEED_RULE_COLORS.ghunnah;
+  }
+
+  if (QALQALAH_LETTERS.has(baseChar)) {
+    return TAJWEED_RULE_COLORS.qalqalah;
+  }
+
+  if (MADD_LETTERS.has(baseChar)) {
+    return TAJWEED_RULE_COLORS.madd;
+  }
+
+  return '';
+}
+
+function renderTajweedText(text, keyPrefix) {
+  const clusters = splitArabicClusters(text);
+  return clusters.map((cluster, index) => {
+    const color = getTajweedColorForCluster(clusters, index);
+    return (
+      <span key={`${keyPrefix}-${index}`} style={color ? { color } : undefined}>
+        {cluster}
+      </span>
+    );
+  });
+}
+
 function formatWordRootDisplay(rootValue) {
   const compact = String(rootValue || '')
     .replace(/[\s-]+/g, '')
@@ -961,6 +1178,7 @@ export default function App() {
   const userTriggerRef = useRef(null);
   const firstVerseArabicRef = useRef(null);
   const firstVerseTafsirRef = useRef(null);
+  const collectionMenuRef = useRef(null);
   const wordHighlightIntervalRef = useRef(null);
   const nextAudioPrefetchRef = useRef(null);
   const lastPrefetchSourceVerseIdRef = useRef('');
@@ -995,6 +1213,9 @@ export default function App() {
   const [coins, setCoins] = useState(() => readStoredCoins());
   const [bookmarks, setBookmarks] = useState(() => readStoredBookmarks());
   const [bookmarkDetails, setBookmarkDetails] = useState(() => readStoredBookmarkDetails());
+  const [verseCollections, setVerseCollections] = useState(() => readStoredVerseCollections());
+  const [selectedCollectionId, setSelectedCollectionId] = useState('');
+  const [collectionMenuVerseId, setCollectionMenuVerseId] = useState('');
   const [journalEntries, setJournalEntries] = useState(() => readStoredJournalEntries());
   const [actionLog, setActionLog] = useState(() => readStoredActionLog());
   const [streak, setStreak] = useState(() => normalizeStreakForToday(readStoredStreak()));
@@ -1046,11 +1267,15 @@ export default function App() {
   });
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [audioPlaybackRate, setAudioPlaybackRate] = useState(() => {
-    const raw = Number.parseFloat(localStorage.getItem(AUDIO_PLAYBACK_RATE_STORAGE_KEY) || '1');
+    const raw = Number.parseFloat(
+      localStorage.getItem(AUDIO_PLAYBACK_RATE_STORAGE_KEY) ||
+      localStorage.getItem('tilawah_audio_playback_rate') ||
+      '1'
+    );
     if (!Number.isFinite(raw)) {
       return 1;
     }
-    return Math.max(0.5, Math.min(1, raw));
+    return Math.max(0.5, Math.min(2, raw));
   });
   const [isAudioMenuOpen, setIsAudioMenuOpen] = useState(false);
   const [copiedVerseId, setCopiedVerseId] = useState('');
@@ -1125,6 +1350,16 @@ export default function App() {
   const [voiceMirrorUserProgress, setVoiceMirrorUserProgress] = useState(0);
   const [voiceMirrorAnimatedPercent, setVoiceMirrorAnimatedPercent] = useState(0);
   const [isWirdCelebrationOpen, setIsWirdCelebrationOpen] = useState(false);
+  const [isMushafLogOpen, setIsMushafLogOpen] = useState(false);
+  const [mushafLogForm, setMushafLogForm] = useState({ surahId: 1, fromVerse: 1, toVerse: 1 });
+  const [mushafLogHistory, setMushafLogHistory] = useState(() => readStoredMushafLogHistory());
+  const [mushafLogStatus, setMushafLogStatus] = useState('');
+  const [mushafLogError, setMushafLogError] = useState('');
+  const [familyModeEnabled, setFamilyModeEnabled] = useState(() => readStoredFamilyModeEnabled());
+  const [familyModePin, setFamilyModePin] = useState(() => readStoredFamilyModePin());
+  const [isChildModeActive, setIsChildModeActive] = useState(() => readStoredChildModeActive());
+  const [childModeDailyGoal, setChildModeDailyGoal] = useState(() => readStoredChildModeDailyGoal());
+  const [childModeActivity, setChildModeActivity] = useState(() => readStoredChildModeActivity());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('style');
   const [readingStatsPeriod, setReadingStatsPeriod] = useState('day');
@@ -1139,6 +1374,7 @@ export default function App() {
     const raw = localStorage.getItem(SHOW_TRANSLATION_STORAGE_KEY);
     return raw === null ? true : raw === 'true';
   });
+  const [tajweedEnabled, setTajweedEnabled] = useState(() => localStorage.getItem(TAJWEED_ENABLED_STORAGE_KEY) === 'true');
   const [selectedReciterId, setSelectedReciterId] = useState(() => {
     const raw = Number.parseInt(localStorage.getItem(RECITER_ID_STORAGE_KEY) || '7', 10);
     return Number.isFinite(raw) ? raw : 7;
@@ -1164,6 +1400,10 @@ export default function App() {
 
   const streakCount = streak.currentStreak || 0;
   const todaysReadCount = Number(streak.activityLog?.[todayKey] || 0);
+  const normalizedChildModeGoal = Math.max(1, Number(childModeDailyGoal || 5));
+  const childGoalProgress = Math.min(100, (todaysReadCount / normalizedChildModeGoal) * 100);
+  const childModeVersesToday = childModeActivity.dateKey === todayKey ? Number(childModeActivity.versesCompletedToday || 0) : 0;
+  const childModeLastSurah = String(childModeActivity.lastSurahName || '').trim();
   const totalVersesReadAllTime = useMemo(
     () => Object.values(streak.activityLog || {}).reduce((sum, count) => sum + Number(count || 0), 0),
     [streak.activityLog]
@@ -2221,6 +2461,10 @@ export default function App() {
   }, [bookmarkDetails]);
 
   useEffect(() => {
+    localStorage.setItem(VERSE_COLLECTIONS_STORAGE_KEY, JSON.stringify(verseCollections));
+  }, [verseCollections]);
+
+  useEffect(() => {
     localStorage.setItem(JOURNAL_ENTRIES_STORAGE_KEY, JSON.stringify(journalEntries));
   }, [journalEntries]);
 
@@ -2315,6 +2559,88 @@ export default function App() {
     localStorage.setItem(KHATMAH_INTERVAL_STORAGE_KEY, khatmahInterval);
   }, [khatmahInterval]);
 
+  useEffect(() => {
+    localStorage.setItem(MUSHAF_LOG_HISTORY_STORAGE_KEY, JSON.stringify(mushafLogHistory));
+  }, [mushafLogHistory]);
+
+  useEffect(() => {
+    localStorage.setItem(FAMILY_MODE_ENABLED_STORAGE_KEY, String(familyModeEnabled));
+  }, [familyModeEnabled]);
+
+  useEffect(() => {
+    if (familyModePin) {
+      localStorage.setItem(FAMILY_MODE_PIN_STORAGE_KEY, familyModePin);
+      return;
+    }
+
+    localStorage.removeItem(FAMILY_MODE_PIN_STORAGE_KEY);
+  }, [familyModePin]);
+
+  useEffect(() => {
+    localStorage.setItem(CHILD_MODE_ACTIVE_STORAGE_KEY, String(isChildModeActive));
+  }, [isChildModeActive]);
+
+  useEffect(() => {
+    localStorage.setItem(CHILD_MODE_DAILY_GOAL_STORAGE_KEY, String(Math.max(1, Number(childModeDailyGoal || 5))));
+  }, [childModeDailyGoal]);
+
+  useEffect(() => {
+    localStorage.setItem(CHILD_MODE_ACTIVITY_STORAGE_KEY, JSON.stringify(childModeActivity));
+  }, [childModeActivity]);
+
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event.key !== CHILD_MODE_ACTIVITY_STORAGE_KEY) {
+        return;
+      }
+      setChildModeActivity(readStoredChildModeActivity());
+    };
+
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  useEffect(() => {
+    if (familyModeEnabled && /^\d{4}$/.test(familyModePin)) {
+      return;
+    }
+
+    if (isChildModeActive) {
+      setIsChildModeActive(false);
+    }
+  }, [familyModeEnabled, familyModePin, isChildModeActive]);
+
+  useEffect(() => {
+    if (!isChildModeActive) {
+      return;
+    }
+
+    if (activePage !== 'reader') {
+      setActivePage('reader');
+    }
+    setIsSettingsOpen(false);
+    setIsUserMenuOpen(false);
+    setIsDrawerOpen(false);
+    setIsVoiceMirrorOpen(false);
+    setIsCompanionOpen(false);
+    setIsFullJournalOpen(false);
+    setReflectionModal(null);
+  }, [isChildModeActive, activePage]);
+
+  useEffect(() => {
+    if (!mushafLogStatus) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMushafLogStatus('');
+    }, 2600);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [mushafLogStatus]);
+
   function checkAndTriggerWirdCelebration(versesTodayCount) {
     const goalPages = Number(dailyPageGoal || 0);
     if (!Number.isFinite(goalPages) || goalPages <= 0) {
@@ -2361,7 +2687,19 @@ export default function App() {
   }, [reflectionModal]);
 
   useEffect(() => {
+    if (!selectedCollectionId) {
+      return;
+    }
+
+    const exists = verseCollections.some((collection) => collection.id === selectedCollectionId);
+    if (!exists) {
+      setSelectedCollectionId('');
+    }
+  }, [selectedCollectionId, verseCollections]);
+
+  useEffect(() => {
     setIsUserMenuOpen(false);
+    setCollectionMenuVerseId('');
   }, [activePage]);
 
   useEffect(() => {
@@ -2379,6 +2717,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    function handleCollectionMenuOutsideClick(event) {
+      if (!collectionMenuRef.current) {
+        return;
+      }
+
+      if (!collectionMenuRef.current.contains(event.target)) {
+        setCollectionMenuVerseId('');
+      }
+    }
+
+    document.addEventListener('mousedown', handleCollectionMenuOutsideClick);
+    return () => {
+      document.removeEventListener('mousedown', handleCollectionMenuOutsideClick);
+    };
+  }, []);
+
+  useEffect(() => {
     if (activePage !== 'profile') {
       setHeatmapTooltip(null);
     }
@@ -2387,6 +2742,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(SHOW_TRANSLATION_STORAGE_KEY, String(showTranslation));
   }, [showTranslation]);
+
+  useEffect(() => {
+    localStorage.setItem(TAJWEED_ENABLED_STORAGE_KEY, String(tajweedEnabled));
+  }, [tajweedEnabled]);
 
   useEffect(() => {
     localStorage.setItem(READER_THEME_STORAGE_KEY, readerTheme);
@@ -2912,6 +3271,192 @@ export default function App() {
       });
   }, [bookmarks, bookmarkDetails]);
 
+  const activeCollection = useMemo(
+    () => verseCollections.find((collection) => collection.id === selectedCollectionId) || null,
+    [verseCollections, selectedCollectionId]
+  );
+  const activeCollectionVerses = useMemo(() => {
+    if (!activeCollection) {
+      return [];
+    }
+
+    return [...(activeCollection.verses || [])].sort((a, b) => {
+      const left = String(a.addedAt || '');
+      const right = String(b.addedAt || '');
+      return left.localeCompare(right);
+    });
+  }, [activeCollection]);
+
+  function createCollectionByName(rawName) {
+    const normalizedName = sanitizeCollectionName(rawName);
+    if (!normalizedName) {
+      return '';
+    }
+
+    const existing = verseCollections.find((collection) => collection.name.toLowerCase() === normalizedName.toLowerCase());
+    if (existing) {
+      return existing.id;
+    }
+
+    const createdAt = new Date().toISOString();
+    const nextCollection = {
+      id: `collection-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: normalizedName,
+      createdAt,
+      verses: [],
+    };
+
+    setVerseCollections((current) => [nextCollection, ...current]);
+    return nextCollection.id;
+  }
+
+  function promptCreateCollection() {
+    const input = window.prompt('Collection name (max 30 characters):', '');
+    if (input === null) {
+      return '';
+    }
+
+    const normalizedName = sanitizeCollectionName(input);
+    if (!normalizedName) {
+      window.alert('Please enter a valid collection name.');
+      return '';
+    }
+
+    return createCollectionByName(normalizedName);
+  }
+
+  function saveVerseToCollection(collectionId, verse, translationSource = '') {
+    const normalizedCollectionId = String(collectionId || '').trim();
+    if (!normalizedCollectionId || !verse) {
+      return;
+    }
+
+    const verseKey = String(verse?.verse_key || '').trim();
+    if (!verseKey) {
+      return;
+    }
+
+    const parsedVerseParts = parseVerseKeyParts(verseKey);
+    const verseEntry = {
+      verseKey,
+      verseId: String(getVerseId(verse)),
+      chapterId: Number(selectedChapter?.id || parsedVerseParts.surah || 0),
+      surahName: String(selectedChapter?.name_simple || `Surah ${parsedVerseParts.surah || ''}`).trim(),
+      arabicText: String(verse?.text_uthmani || '').trim(),
+      translationText: stripHtmlTags(
+        translationSource ||
+          verse?.translations?.[0]?.text ||
+          verse?.translations?.[0]?.translation ||
+          verse?.translation?.text ||
+          ''
+      ),
+      note: '',
+      addedAt: new Date().toISOString(),
+    };
+
+    let didAdd = false;
+    setVerseCollections((current) =>
+      current.map((collection) => {
+        if (collection.id !== normalizedCollectionId) {
+          return collection;
+        }
+
+        if ((collection.verses || []).some((item) => String(item.verseKey || '') === verseKey)) {
+          return collection;
+        }
+
+        didAdd = true;
+        return {
+          ...collection,
+          verses: [...(collection.verses || []), verseEntry],
+        };
+      })
+    );
+
+    if (didAdd) {
+      postBookmarkToServer(verse, true);
+    }
+  }
+
+  function removeVerseFromCollection(collectionId, verseKey) {
+    const normalizedCollectionId = String(collectionId || '').trim();
+    const normalizedVerseKey = String(verseKey || '').trim();
+    if (!normalizedCollectionId || !normalizedVerseKey) {
+      return;
+    }
+
+    setVerseCollections((current) =>
+      current.map((collection) => {
+        if (collection.id !== normalizedCollectionId) {
+          return collection;
+        }
+
+        return {
+          ...collection,
+          verses: (collection.verses || []).filter((item) => String(item.verseKey || '') !== normalizedVerseKey),
+        };
+      })
+    );
+  }
+
+  function updateCollectionVerseNote(collectionId, verseKey, noteValue) {
+    const normalizedCollectionId = String(collectionId || '').trim();
+    const normalizedVerseKey = String(verseKey || '').trim();
+    if (!normalizedCollectionId || !normalizedVerseKey) {
+      return;
+    }
+
+    setVerseCollections((current) =>
+      current.map((collection) => {
+        if (collection.id !== normalizedCollectionId) {
+          return collection;
+        }
+
+        return {
+          ...collection,
+          verses: (collection.verses || []).map((item) =>
+            String(item.verseKey || '') === normalizedVerseKey
+              ? {
+                  ...item,
+                  note: String(noteValue || ''),
+                }
+              : item
+          ),
+        };
+      })
+    );
+  }
+
+  function deleteCollection(collectionId) {
+    const normalizedCollectionId = String(collectionId || '').trim();
+    if (!normalizedCollectionId) {
+      return;
+    }
+
+    const collection = verseCollections.find((item) => item.id === normalizedCollectionId);
+    const label = collection?.name || 'this collection';
+    if (!window.confirm(`Delete ${label}? This cannot be undone.`)) {
+      return;
+    }
+
+    setVerseCollections((current) => current.filter((item) => item.id !== normalizedCollectionId));
+    setSelectedCollectionId((current) => (current === normalizedCollectionId ? '' : current));
+  }
+
+  function handleCollectionMenuPick(targetCollectionId, verse, translationSource) {
+    let nextCollectionId = String(targetCollectionId || '').trim();
+    if (nextCollectionId === '__create__') {
+      nextCollectionId = promptCreateCollection();
+    }
+
+    if (!nextCollectionId) {
+      return;
+    }
+
+    saveVerseToCollection(nextCollectionId, verse, translationSource);
+    setCollectionMenuVerseId('');
+  }
+
   useEffect(() => {
     localStorage.setItem(SURAH_READING_HISTORY_STORAGE_KEY, JSON.stringify(surahReadingHistory));
   }, [surahReadingHistory]);
@@ -3036,11 +3581,159 @@ export default function App() {
   const khatmahResumeLabel = hasKhatmahResumePoint
     ? `${khatmahStoredSurah?.name_simple || `Surah ${khatmahStoredVerseParts.surah || 1}`}, Verse ${khatmahStoredVerseParts.ayah || 1}`
     : '';
+  const mushafSurahOptions = useMemo(
+    () =>
+      Array.from({ length: 114 }, (_, index) => {
+        const surahId = index + 1;
+        const chapter = chapters.find((item) => Number(item?.id || 0) === surahId);
+        return {
+          id: surahId,
+          name: String(chapter?.name_simple || `Surah ${surahId}`),
+          versesCount: Number(chapter?.verses_count || chapter?.versesCount || 0),
+        };
+      }),
+    [chapters]
+  );
+  const selectedMushafSurah = mushafSurahOptions.find((option) => option.id === Number(mushafLogForm.surahId || 0)) || null;
+  const selectedMushafSurahMaxVerse = Number(selectedMushafSurah?.versesCount || 0);
   const selectedKhatmahIntervalTarget =
     KHATMAH_INTERVAL_OPTIONS.find((option) => option.id === khatmahInterval)?.targetVerses || 10;
 
   function addCoins(amount) {
     setCoins((current) => current + amount);
+  }
+
+  function applyManualReadProgress(verseCount) {
+    const normalizedVerseCount = Number.parseInt(String(verseCount || 0), 10);
+    if (!Number.isFinite(normalizedVerseCount) || normalizedVerseCount <= 0) {
+      return { versesLogged: 0, earnedCoins: 0, todaysCountAfter: Number(streakRef.current?.activityLog?.[getTodayKey()] || 0) };
+    }
+
+    const dateKey = getTodayKey();
+    const currentStreakData = streakRef.current;
+    const todaysCount = Number(currentStreakData.activityLog?.[dateKey] || 0);
+    const isFirstReadToday = todaysCount === 0;
+    const previousDate = currentStreakData.lastReadDate;
+
+    let updatedCurrentStreak = Number(currentStreakData.currentStreak || 0);
+    let updatedLastReadDate = previousDate;
+
+    if (isFirstReadToday) {
+      if (previousDate === getPreviousDateKey(dateKey)) {
+        updatedCurrentStreak = Math.max(1, updatedCurrentStreak + 1);
+      } else if (previousDate === dateKey) {
+        updatedCurrentStreak = Math.max(1, updatedCurrentStreak);
+      } else {
+        updatedCurrentStreak = 1;
+      }
+      updatedLastReadDate = dateKey;
+    }
+
+    const nextTodaysCount = todaysCount + normalizedVerseCount;
+    const nextStreakData = {
+      lastReadDate: updatedLastReadDate,
+      currentStreak: updatedCurrentStreak,
+      longestStreak: Math.max(Number(currentStreakData.longestStreak || 0), updatedCurrentStreak),
+      activityLog: {
+        ...(currentStreakData.activityLog || {}),
+        [dateKey]: nextTodaysCount,
+      },
+    };
+
+    streakRef.current = nextStreakData;
+    setStreak(nextStreakData);
+
+    if (updatedCurrentStreak !== Number(currentStreakData.currentStreak || 0)) {
+      postStreakToServer(nextStreakData);
+    }
+
+    const nextMultiplier = updatedCurrentStreak >= 7 ? 2 : 1;
+    const earnedCoins = normalizedVerseCount * nextMultiplier;
+
+    const nextDailyCoins = {
+      ...dailyCoinsRef.current,
+      [dateKey]: Number(dailyCoinsRef.current[dateKey] || 0) + earnedCoins,
+    };
+    dailyCoinsRef.current = nextDailyCoins;
+    setDailyCoins(nextDailyCoins);
+    const nextLifetimeCoins = lifetimeCoinsRef.current + earnedCoins;
+    lifetimeCoinsRef.current = nextLifetimeCoins;
+    setLifetimeCoins(nextLifetimeCoins);
+    addCoins(earnedCoins);
+
+    checkAndTriggerWirdCelebration(nextTodaysCount);
+
+    return {
+      versesLogged: normalizedVerseCount,
+      earnedCoins,
+      todaysCountAfter: nextTodaysCount,
+    };
+  }
+
+  function openMushafLogModal() {
+    setMushafLogForm((current) => ({
+      surahId: Number(current?.surahId || selectedChapter?.id || 1),
+      fromVerse: Number(current?.fromVerse || 1),
+      toVerse: Number(current?.toVerse || 1),
+    }));
+    setMushafLogError('');
+    setIsMushafLogOpen(true);
+  }
+
+  function closeMushafLogModal() {
+    setIsMushafLogOpen(false);
+    setMushafLogError('');
+  }
+
+  function submitMushafLogReading() {
+    const surahId = Number.parseInt(String(mushafLogForm.surahId || ''), 10);
+    const fromVerse = Number.parseInt(String(mushafLogForm.fromVerse || ''), 10);
+    const toVerse = Number.parseInt(String(mushafLogForm.toVerse || ''), 10);
+
+    if (!Number.isFinite(surahId) || surahId < 1 || surahId > 114) {
+      setMushafLogError('Please select a valid surah.');
+      return;
+    }
+
+    if (!Number.isFinite(fromVerse) || !Number.isFinite(toVerse) || fromVerse <= 0 || toVerse <= 0) {
+      setMushafLogError('Please enter a valid verse range.');
+      return;
+    }
+
+    if (toVerse < fromVerse) {
+      setMushafLogError('To verse must be greater than or equal to from verse.');
+      return;
+    }
+
+    const surahOption = mushafSurahOptions.find((option) => option.id === surahId);
+    const maxVerse = Number(surahOption?.versesCount || 0);
+
+    if (maxVerse > 0 && toVerse > maxVerse) {
+      setMushafLogError(`Surah ${surahOption?.name || surahId} has ${maxVerse} verses.`);
+      return;
+    }
+
+    const versesLogged = toVerse - fromVerse + 1;
+    const result = applyManualReadProgress(versesLogged);
+    const dateKey = getTodayKey();
+
+    setSurahReadingHistory((current) => recordSurahReadingSession(current, surahId, dateKey));
+
+    const entry = {
+      id: `mushaf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      dateKey,
+      surahId,
+      surahName: String(surahOption?.name || `Surah ${surahId}`),
+      fromVerse,
+      toVerse,
+      versesLogged,
+      createdAt: new Date().toISOString(),
+    };
+
+    setMushafLogHistory((current) => [entry, ...current].slice(0, 300));
+    setMushafLogStatus(`Logged ${result.versesLogged} verses — Barakallahu feek`);
+    setMushafLogError('');
+    setIsMushafLogOpen(false);
   }
 
   function earnCoinsForAction(actionType, verseId, baseAmount) {
@@ -3142,8 +3835,109 @@ export default function App() {
 
   function awardReadCoin(verseId) {
     const key = String(verseId);
-    earnCoinsForAction('read', key, 1);
+    const earnedCoins = earnCoinsForAction('read', key, 1);
+
+    if (earnedCoins > 0 && isChildModeActive) {
+      const matchingVerse = verses.find((verse) => String(getVerseId(verse)) === key);
+      const verseKeyParts = parseVerseKeyParts(String(matchingVerse?.verse_key || ''));
+      const surahFromVerse = chapters.find((chapter) => Number(chapter?.id || 0) === Number(verseKeyParts.surah || 0));
+      const surahName =
+        String(selectedChapter?.name_simple || '').trim() ||
+        String(surahFromVerse?.name_simple || '').trim() ||
+        'Current Surah';
+
+      setChildModeActivity((current) => {
+        const dateKey = getTodayKey();
+        const currentToday = String(current?.dateKey || '') === dateKey;
+        const currentCount = Number(current?.versesCompletedToday || 0);
+
+        return {
+          dateKey,
+          lastSurahName: surahName,
+          versesCompletedToday: (currentToday ? currentCount : 0) + 1,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+    }
+
     logReadingSessionToServer(key);
+  }
+
+  function promptForFamilyPin(promptText) {
+    const response = window.prompt(promptText, '');
+    if (response === null) {
+      return null;
+    }
+
+    const cleaned = String(response || '').trim();
+    if (!/^\d{4}$/.test(cleaned)) {
+      window.alert('PIN must be exactly 4 digits.');
+      return null;
+    }
+
+    return cleaned;
+  }
+
+  function handleFamilyModeToggle(nextEnabled) {
+    if (nextEnabled) {
+      const pin = promptForFamilyPin('Set a 4-digit PIN for Family Mode');
+      if (!pin) {
+        return;
+      }
+
+      setFamilyModePin(pin);
+      setFamilyModeEnabled(true);
+      setIsChildModeActive(false);
+      return;
+    }
+
+    if (familyModeEnabled && familyModePin) {
+      const verify = promptForFamilyPin('Enter your Family Mode PIN to disable Family Mode');
+      if (!verify) {
+        return;
+      }
+
+      if (verify !== familyModePin) {
+        window.alert('Incorrect PIN. Family Mode remains enabled.');
+        return;
+      }
+    }
+
+    setFamilyModeEnabled(false);
+    setIsChildModeActive(false);
+  }
+
+  function switchToChildMode() {
+    if (!familyModeEnabled || !/^\d{4}$/.test(familyModePin)) {
+      return;
+    }
+
+    const pin = promptForFamilyPin('Enter Family Mode PIN to switch to Child Mode');
+    if (!pin) {
+      return;
+    }
+
+    if (pin !== familyModePin) {
+      window.alert('Incorrect PIN.');
+      return;
+    }
+
+    setIsChildModeActive(true);
+    setActivePage('reader');
+  }
+
+  function backToParentMode() {
+    const pin = promptForFamilyPin('Enter Family Mode PIN to return to Parent Mode');
+    if (!pin) {
+      return;
+    }
+
+    if (pin !== familyModePin) {
+      window.alert('Incorrect PIN.');
+      return;
+    }
+
+    setIsChildModeActive(false);
   }
 
   function clearActiveReadTimer() {
@@ -5604,7 +6398,7 @@ export default function App() {
   }
 
   function selectAudioPlaybackRate(rate) {
-    const nextRate = Math.max(0.5, Math.min(1, Number(rate)));
+    const nextRate = Math.max(0.5, Math.min(2, Number(rate)));
     setAudioPlaybackRate(nextRate);
   }
 
@@ -6090,7 +6884,7 @@ export default function App() {
     ? new Date(groupLastUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : '';
   const volumeIcon = isAudioMuted || audioVolume === 0 ? '🔇' : audioVolume < 0.5 ? '🔉' : '🔊';
-  const audioSpeedOptions = [0.5, 0.6, 0.7, 0.8, 0.9, 1];
+  const audioSpeedOptions = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.25, 1.5, 1.75, 2];
   const forgottenSurahChapter = chapters.find(
     (chapter) => Number(chapter?.id || 0) === Number(forgottenSurah?.surahNumber || 0)
   );
@@ -6158,7 +6952,7 @@ export default function App() {
   }
 
   return (
-    <main className={`reader-layout theme-${readerTheme}`}>
+    <main className={`reader-layout theme-${readerTheme} ${isChildModeActive ? 'child-mode-active' : ''}`}>
       {activePage === 'reader' && isDrawerOpen ? (
         <button
           type="button"
@@ -6308,90 +7102,141 @@ export default function App() {
       </aside> : null}
 
       <section className="reading-panel">
-        {activePage === 'reader' ? <header className="reading-header" ref={readingHeaderRef}>
-          <button
-            type="button"
-            className="surah-menu-trigger"
-            ref={surahMenuTriggerRef}
-            onClick={() => {
-              setDrawerTab('surahs');
-              setIsDrawerOpen(true);
-            }}
-          >
-            {selectedChapter?.name_simple || 'Surahs'}
-            <span className="surah-trigger-chevron" aria-hidden="true">
-              ▾
-              {hasForgottenSurahSignal ? <span className="forgotten-surah-dot" /> : null}
-            </span>
-          </button>
-          <div className="reading-header-info" aria-live="polite">
-            <span className="reading-header-page">Page {centeredVerseData?.page_number || '-'}</span>
-            <span className="reading-header-meta"> · Juz {centeredVerseData?.juz_number || '-'} / Hizb {centeredVerseData?.hizb_number || '-'}</span>
-          </div>
-          <div className="header-right-controls" ref={userMenuRef}>
-            <button
-              className="settings-trigger"
-              type="button"
-              aria-label="Open settings"
-              onClick={() => {
-                setSettingsTab('style');
-                setIsSettingsOpen(true);
-              }}
-            >
-              <span className="settings-icon" aria-hidden="true" />
-            </button>
-            <button
-              className="user-trigger"
-              type="button"
-              ref={userTriggerRef}
-              aria-haspopup="menu"
-              aria-expanded={isUserMenuOpen}
-              onClick={() => setIsUserMenuOpen((current) => !current)}
-            >
-              {headerProfileName}
-            </button>
-            {isUserMenuOpen ? (
-              <div className="user-dropdown-menu" role="menu" aria-label="Profile navigation">
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setIsUserMenuOpen(false);
-                    setIsDrawerOpen(false);
-                    setProfileTab('stats');
-                    setActivePage('profile');
-                  }}
-                >
-                  <span aria-hidden="true">📊</span>
-                  <span>Dashboard</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setIsUserMenuOpen(false);
-                    setIsDrawerOpen(false);
-                    setProfileTab('groups');
-                    setActivePage('profile');
-                  }}
-                >
-                  <span aria-hidden="true">👥</span>
-                  <span>Groups</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    openKhatmahMode();
-                  }}
-                >
-                  <span aria-hidden="true">📖</span>
-                  <span>Khatmah Mode</span>
-                </button>
+        {activePage === 'reader' ? (
+          isChildModeActive ? (
+            <header className="reading-header child-mode-header" ref={readingHeaderRef}>
+              <div className="child-mode-header-main" aria-live="polite">
+                <h2 className="child-mode-surah-name">{selectedChapter?.name_simple || 'Surah'}</h2>
+                <div className="child-goal-wrap">
+                  <div className="child-goal-row">
+                    <strong>Today's Goal</strong>
+                    <span>{todaysReadCount} / {normalizedChildModeGoal} verses</span>
+                  </div>
+                  <div className="child-goal-track" role="progressbar" aria-valuemin={0} aria-valuemax={normalizedChildModeGoal} aria-valuenow={Math.min(todaysReadCount, normalizedChildModeGoal)}>
+                    <div className="child-goal-fill" style={{ width: `${childGoalProgress}%` }} />
+                  </div>
+                </div>
               </div>
-            ) : null}
-          </div>
-        </header> : null}
+              <button
+                type="button"
+                className="child-mode-back-btn"
+                onClick={backToParentMode}
+              >
+                Back to Parent Mode
+              </button>
+            </header>
+          ) : (
+            <header className="reading-header" ref={readingHeaderRef}>
+              <div className="reading-header-left">
+                <button
+                  type="button"
+                  className="surah-menu-trigger"
+                  ref={surahMenuTriggerRef}
+                  onClick={() => {
+                    setDrawerTab('surahs');
+                    setIsDrawerOpen(true);
+                  }}
+                >
+                  {selectedChapter?.name_simple || 'Surahs'}
+                  <span className="surah-trigger-chevron" aria-hidden="true">
+                    ▾
+                    {hasForgottenSurahSignal ? <span className="forgotten-surah-dot" /> : null}
+                  </span>
+                </button>
+                <button type="button" className="mushaf-log-trigger" onClick={openMushafLogModal}>
+                  📖 Log Mushaf Reading
+                </button>
+                {familyModeEnabled && /^\d{4}$/.test(familyModePin) ? (
+                  <button type="button" className="switch-child-mode-btn" onClick={switchToChildMode}>
+                    Switch to Child Mode
+                  </button>
+                ) : null}
+              </div>
+              <div className="reading-header-info" aria-live="polite">
+                <span className="reading-header-page">Page {centeredVerseData?.page_number || '-'}</span>
+                <span className="reading-header-meta"> · Juz {centeredVerseData?.juz_number || '-'} / Hizb {centeredVerseData?.hizb_number || '-'}</span>
+              </div>
+              <div className="header-right-controls" ref={userMenuRef}>
+                <button
+                  className="settings-trigger"
+                  type="button"
+                  aria-label="Open settings"
+                  onClick={() => {
+                    setSettingsTab('style');
+                    setIsSettingsOpen(true);
+                  }}
+                >
+                  <span className="settings-icon" aria-hidden="true" />
+                </button>
+                <button
+                  className="user-trigger"
+                  type="button"
+                  ref={userTriggerRef}
+                  aria-haspopup="menu"
+                  aria-expanded={isUserMenuOpen}
+                  onClick={() => setIsUserMenuOpen((current) => !current)}
+                >
+                  {headerProfileName}
+                </button>
+                {isUserMenuOpen ? (
+                  <div className="user-dropdown-menu" role="menu" aria-label="Profile navigation">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        setIsDrawerOpen(false);
+                        setProfileTab('stats');
+                        setActivePage('profile');
+                      }}
+                    >
+                      <span aria-hidden="true">📊</span>
+                      <span>Dashboard</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        setIsDrawerOpen(false);
+                        setProfileTab('groups');
+                        setActivePage('profile');
+                      }}
+                    >
+                      <span aria-hidden="true">👥</span>
+                      <span>Groups</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        setIsDrawerOpen(false);
+                        setSelectedCollectionId('');
+                        setActivePage('collections');
+                      }}
+                    >
+                      <span aria-hidden="true">🗂</span>
+                      <span>Collections</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        openKhatmahMode();
+                      }}
+                    >
+                      <span aria-hidden="true">📖</span>
+                      <span>Khatmah Mode</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </header>
+          )
+        ) : null}
+
+        {mushafLogStatus ? <p className="mushaf-log-status" aria-live="polite">{mushafLogStatus}</p> : null}
 
         {activePage === 'reader' ? (
           <>
@@ -6476,6 +7321,44 @@ export default function App() {
                             <path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3-6 3V5a1 1 0 0 1 1-1z" />
                           </svg>
                         </button>
+                        <div className="verse-collection-menu-wrap" ref={collectionMenuVerseId === String(verseId) ? collectionMenuRef : null}>
+                          <button
+                            className="verse-icon-btn verse-collection-btn"
+                            type="button"
+                            data-tooltip="Save to Collection"
+                            aria-label="Save verse to collection"
+                            onClick={() => {
+                              setCollectionMenuVerseId((current) => (current === String(verseId) ? '' : String(verseId)));
+                            }}
+                          >
+                            🔖+
+                          </button>
+                          {collectionMenuVerseId === String(verseId) ? (
+                            <div className="verse-collection-menu" role="menu" aria-label="Save verse to collection">
+                              {verseCollections.length === 0 ? (
+                                <p className="verse-collection-empty">No collections yet</p>
+                              ) : (
+                                verseCollections.map((collection) => (
+                                  <button
+                                    key={collection.id}
+                                    type="button"
+                                    className="verse-collection-option"
+                                    onClick={() => handleCollectionMenuPick(collection.id, verse, translation)}
+                                  >
+                                    {collection.name}
+                                  </button>
+                                ))
+                              )}
+                              <button
+                                type="button"
+                                className="verse-collection-option create"
+                                onClick={() => handleCollectionMenuPick('__create__', verse, translation)}
+                              >
+                                + Create new collection
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                       <div className="verse-right-tools">
                         <button
@@ -6505,11 +7388,15 @@ export default function App() {
                                 data-word-index={index}
                                 className={`arabic-word-segment ${(hoveredWord?.verseId === String(verseId) && hoveredWord?.wordIndex === index) || hoveredOrnamentVerseId === String(verseId) ? 'hovered' : ''} ${activeAudioWord?.verseId === String(verseId) && activeAudioWord?.wordIndex === index ? 'word-active' : ''}`}
                               >
-                                {word.text_uthmani}
+                                {tajweedEnabled
+                                  ? renderTajweedText(word.text_uthmani, `${verseId}-${word.id || index}`)
+                                  : word.text_uthmani}
                                 {index < interactiveWords.length - 1 ? ' ' : ''}
                               </span>
                             ))
-                          : String(verse?.text_uthmani || '').trim()}
+                          : tajweedEnabled
+                            ? renderTajweedText(String(verse?.text_uthmani || '').trim(), `${verseId}-full`)
+                            : String(verse?.text_uthmani || '').trim()}
                         {' '}
                         <span
                           className="verse-ornament"
@@ -6528,16 +7415,18 @@ export default function App() {
                     ) : null}
 
                     <div className="verse-bottom-row">
-                      <button
-                        className="tafsir-link-btn"
-                        type="button"
-                        data-tooltip="Journal"
-                        onClick={() => openReflectionForVerse(verse)}
-                        aria-label="Open reflection journal"
-                      >
-                        <span aria-hidden="true">📓</span>
-                        <span>Journal</span>
-                      </button>
+                      {!isChildModeActive ? (
+                        <button
+                          className="tafsir-link-btn"
+                          type="button"
+                          data-tooltip="Journal"
+                          onClick={() => openReflectionForVerse(verse)}
+                          aria-label="Open reflection journal"
+                        >
+                          <span aria-hidden="true">📓</span>
+                          <span>Journal</span>
+                        </button>
+                      ) : null}
                       <button
                         className={`tafsir-link-btn ${expandedTafsir[verseId] ? 'active' : ''}`}
                         type="button"
@@ -6550,15 +7439,17 @@ export default function App() {
                         <span aria-hidden="true">📖</span>
                         <span>Tafsir</span>
                       </button>
-                      <button
-                        className={`tafsir-link-btn live-this-btn ${liveThisState?.expanded ? 'active' : ''}`}
-                        type="button"
-                        data-tooltip="Live with this Verse"
-                        onClick={() => toggleLiveThis(verse)}
-                        aria-label="Live with this verse"
-                      >
-                        <span>✦ Live this</span>
-                      </button>
+                      {!isChildModeActive ? (
+                        <button
+                          className={`tafsir-link-btn live-this-btn ${liveThisState?.expanded ? 'active' : ''}`}
+                          type="button"
+                          data-tooltip="Live with this Verse"
+                          onClick={() => toggleLiveThis(verse)}
+                          aria-label="Live with this verse"
+                        >
+                          <span>✦ Live this</span>
+                        </button>
+                      ) : null}
                     </div>
 
                     {expandedTafsir[verseId] ? (
@@ -7080,6 +7971,122 @@ export default function App() {
               </section>
             )}
           </section>
+        ) : activePage === 'collections' ? (
+          <section className="profile-dashboard collections-page">
+            <button
+              type="button"
+              className="profile-back-btn"
+              onClick={() => {
+                setActivePage('reader');
+                setSelectedCollectionId('');
+              }}
+            >
+              ← Back to Reading
+            </button>
+
+            {!activeCollection ? (
+              <>
+                <header className="collections-header-card">
+                  <h2>Verse Collections</h2>
+                  <p>A personal library above basic bookmarks.</p>
+                  <button
+                    type="button"
+                    className="profile-auth-btn"
+                    onClick={() => {
+                      const createdId = promptCreateCollection();
+                      if (createdId) {
+                        setSelectedCollectionId(createdId);
+                      }
+                    }}
+                  >
+                    + Create Collection
+                  </button>
+                </header>
+
+                {verseCollections.length === 0 ? (
+                  <section className="collections-empty-card">
+                    <p>No collections yet. Use 🔖+ on any verse to save it into a collection.</p>
+                  </section>
+                ) : (
+                  <section className="collections-card-grid" aria-live="polite">
+                    {verseCollections.map((collection) => (
+                      <article key={collection.id} className="collection-card">
+                        <button
+                          type="button"
+                          className="collection-card-open"
+                          onClick={() => setSelectedCollectionId(collection.id)}
+                        >
+                          <strong>{collection.name}</strong>
+                          <span>{(collection.verses || []).length} saved verse{(collection.verses || []).length === 1 ? '' : 's'}</span>
+                          <small>Created {new Date(collection.createdAt || Date.now()).toLocaleDateString()}</small>
+                        </button>
+                        <button
+                          type="button"
+                          className="collection-delete-btn"
+                          onClick={() => deleteCollection(collection.id)}
+                        >
+                          Delete Collection
+                        </button>
+                      </article>
+                    ))}
+                  </section>
+                )}
+              </>
+            ) : (
+              <section className="collection-detail-card" aria-live="polite">
+                <div className="collection-detail-top">
+                  <button type="button" className="profile-auth-btn" onClick={() => setSelectedCollectionId('')}>
+                    ← All Collections
+                  </button>
+                  <button
+                    type="button"
+                    className="collection-delete-btn"
+                    onClick={() => deleteCollection(activeCollection.id)}
+                  >
+                    Delete Collection
+                  </button>
+                </div>
+
+                <h3>{activeCollection.name}</h3>
+                <p className="collection-detail-meta">{activeCollectionVerses.length} verse{activeCollectionVerses.length === 1 ? '' : 's'}</p>
+
+                {activeCollectionVerses.length === 0 ? (
+                  <p className="collections-empty-text">No verses saved here yet.</p>
+                ) : (
+                  <div className="collection-verses-list">
+                    {activeCollectionVerses.map((item) => (
+                      <article key={`${activeCollection.id}-${item.verseKey}`} className="collection-verse-card">
+                        <div className="collection-verse-top">
+                          <strong>{item.verseKey}</strong>
+                          <button
+                            type="button"
+                            className="collection-verse-delete"
+                            onClick={() => removeVerseFromCollection(activeCollection.id, item.verseKey)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <p className="collection-verse-ar" dir="rtl" lang="ar" translate="no">
+                          {item.arabicText || '—'}
+                        </p>
+                        <p className="collection-verse-tr">{item.translationText || 'No translation saved.'}</p>
+                        <label className="collection-note-label" htmlFor={`collection-note-${activeCollection.id}-${item.verseKey}`}>
+                          Private notes
+                        </label>
+                        <textarea
+                          id={`collection-note-${activeCollection.id}-${item.verseKey}`}
+                          className="collection-note-input"
+                          defaultValue={item.note || ''}
+                          placeholder="Write your private note..."
+                          onBlur={(event) => updateCollectionVerseNote(activeCollection.id, item.verseKey, event.target.value)}
+                        />
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+          </section>
         ) : (
           <section className="khatmah-mode-shell">
             <button
@@ -7402,7 +8409,7 @@ export default function App() {
                   <div className="audio-menu-speed-list">
                     {audioSpeedOptions.map((speed) => {
                       const selected = audioPlaybackRate === speed;
-                      const label = speed === 1 ? '1x (Normal)' : `${speed.toFixed(1)}x`;
+                      const label = speed === 1 ? '1x (Normal)' : `${Number(speed).toString()}x`;
                       return (
                         <button
                           key={speed}
@@ -7454,7 +8461,7 @@ export default function App() {
         <audio ref={wordAudioRef} preload="none" />
       </div> : null}
 
-      {activePage === 'reader' ? <button
+      {activePage === 'reader' && !isChildModeActive ? <button
         type="button"
         className="voice-mirror-fab"
         aria-label="Open Voice Mirror"
@@ -7463,7 +8470,7 @@ export default function App() {
         🎤
       </button> : null}
 
-      {activePage === 'reader' ? <button
+      {activePage === 'reader' && !isChildModeActive ? <button
         type="button"
         className="companion-fab"
         aria-label="Open Quran Companion"
@@ -7472,7 +8479,7 @@ export default function App() {
         💬
       </button> : null}
 
-      {activePage === 'reader' ? <section className={`companion-panel ${isCompanionOpen ? 'open' : ''}`} aria-hidden={!isCompanionOpen}>
+      {activePage === 'reader' && !isChildModeActive ? <section className={`companion-panel ${isCompanionOpen ? 'open' : ''}`} aria-hidden={!isCompanionOpen}>
         <header className="companion-header">
           <strong>Quran Companion</strong>
           <button type="button" onClick={() => setIsCompanionOpen(false)} aria-label="Close companion chat">
@@ -7951,6 +8958,48 @@ export default function App() {
                       : 'Private account — your reflections are only visible to you.'}
                   </p>
                 </section>
+
+                <section className="settings-subsection">
+                  <h4>Family Mode</h4>
+                  <label className="setting-row" htmlFor="family-mode-toggle">
+                    <span>Enable Child Mode</span>
+                    <input
+                      id="family-mode-toggle"
+                      type="checkbox"
+                      checked={familyModeEnabled}
+                      onChange={(event) => handleFamilyModeToggle(event.target.checked)}
+                    />
+                  </label>
+                  <label className="setting-row column" htmlFor="child-daily-goal-input">
+                    <span>Child Daily Goal (verses)</span>
+                    <input
+                      id="child-daily-goal-input"
+                      type="number"
+                      min={1}
+                      max={300}
+                      value={childModeDailyGoal}
+                      onChange={(event) => {
+                        const next = Number.parseInt(String(event.target.value || ''), 10);
+                        if (!Number.isFinite(next)) {
+                          setChildModeDailyGoal(5);
+                          return;
+                        }
+
+                        setChildModeDailyGoal(Math.max(1, Math.min(300, next)));
+                      }}
+                    />
+                  </label>
+                  <p className="settings-note-text">
+                    {familyModeEnabled ? 'Family Mode enabled. PIN is required to switch in and out of Child Mode.' : 'Family Mode is off.'}
+                  </p>
+                </section>
+
+                <section className="settings-subsection parent-dashboard-card">
+                  <h4>Parent Dashboard</h4>
+                  <p className="settings-note-text">Today's date: {gregorianDateLabel}</p>
+                  <p className="settings-note-text">Child last read: {childModeLastSurah || 'No child activity yet'}</p>
+                  <p className="settings-note-text">Child verses completed today: {childModeVersesToday}</p>
+                </section>
               </div>
             ) : (
               <div className="settings-panel">
@@ -7961,6 +9010,16 @@ export default function App() {
                     type="checkbox"
                     checked={showTranslation}
                     onChange={(event) => setShowTranslation(event.target.checked)}
+                  />
+                </label>
+
+                <label className="setting-row" htmlFor="tajweed-colors-toggle">
+                  <span>Tajweed Colors</span>
+                  <input
+                    id="tajweed-colors-toggle"
+                    type="checkbox"
+                    checked={tajweedEnabled}
+                    onChange={(event) => setTajweedEnabled(event.target.checked)}
                   />
                 </label>
 
@@ -7997,6 +9056,102 @@ export default function App() {
                 <p className="settings-note-text">Daily progress is now controlled by the Daily Page Goal on the profile page.</p>
               </div>
             )}
+          </section>
+        </div>
+      ) : null}
+
+      {isMushafLogOpen ? (
+        <div className="mushaf-log-overlay" onClick={closeMushafLogModal}>
+          <section className="mushaf-log-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="mushaf-log-header">
+              <h3>I read from my Mushaf today</h3>
+              <button type="button" className="mushaf-log-close" onClick={closeMushafLogModal}>
+                ✕
+              </button>
+            </header>
+
+            <label className="mushaf-log-field" htmlFor="mushaf-log-surah-select">
+              <span>Surah</span>
+              <select
+                id="mushaf-log-surah-select"
+                value={mushafLogForm.surahId}
+                onChange={(event) => {
+                  const nextSurahId = Number.parseInt(String(event.target.value || ''), 10) || 1;
+                  setMushafLogForm((current) => ({
+                    ...current,
+                    surahId: nextSurahId,
+                  }));
+                }}
+              >
+                {mushafSurahOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.id}. {option.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="mushaf-log-range-grid">
+              <label className="mushaf-log-field" htmlFor="mushaf-log-from-verse">
+                <span>From verse</span>
+                <input
+                  id="mushaf-log-from-verse"
+                  type="number"
+                  min={1}
+                  max={selectedMushafSurahMaxVerse > 0 ? selectedMushafSurahMaxVerse : undefined}
+                  value={mushafLogForm.fromVerse}
+                  onChange={(event) => {
+                    const nextValue = Number.parseInt(String(event.target.value || ''), 10);
+                    setMushafLogForm((current) => ({
+                      ...current,
+                      fromVerse: Number.isFinite(nextValue) ? nextValue : 1,
+                    }));
+                  }}
+                />
+              </label>
+
+              <label className="mushaf-log-field" htmlFor="mushaf-log-to-verse">
+                <span>To verse</span>
+                <input
+                  id="mushaf-log-to-verse"
+                  type="number"
+                  min={1}
+                  max={selectedMushafSurahMaxVerse > 0 ? selectedMushafSurahMaxVerse : undefined}
+                  value={mushafLogForm.toVerse}
+                  onChange={(event) => {
+                    const nextValue = Number.parseInt(String(event.target.value || ''), 10);
+                    setMushafLogForm((current) => ({
+                      ...current,
+                      toVerse: Number.isFinite(nextValue) ? nextValue : 1,
+                    }));
+                  }}
+                />
+              </label>
+            </div>
+
+            {selectedMushafSurahMaxVerse > 0 ? (
+              <p className="mushaf-log-help-text">{selectedMushafSurah?.name || 'Selected surah'} has {selectedMushafSurahMaxVerse} verses.</p>
+            ) : null}
+            {mushafLogError ? <p className="mushaf-log-error">{mushafLogError}</p> : null}
+
+            <button type="button" className="mushaf-log-confirm" onClick={submitMushafLogReading}>
+              Log Reading
+            </button>
+
+            <section className="mushaf-log-history" aria-live="polite">
+              <h4>History</h4>
+              {mushafLogHistory.length === 0 ? (
+                <p className="mushaf-log-history-empty">No manual Mushaf logs yet.</p>
+              ) : (
+                <div className="mushaf-log-history-list">
+                  {mushafLogHistory.slice(0, 8).map((entry) => (
+                    <p key={entry.id} className="mushaf-log-history-item">
+                      <strong>{entry.dateKey}</strong> · {entry.surahName || `Surah ${entry.surahId}`} · {entry.fromVerse}–{entry.toVerse} ({entry.versesLogged} verses)
+                    </p>
+                  ))}
+                </div>
+              )}
+            </section>
           </section>
         </div>
       ) : null}
